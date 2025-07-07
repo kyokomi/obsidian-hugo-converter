@@ -1,8 +1,27 @@
-const obsidian = require('obsidian');
+import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
 
-class HugoConverterPlugin extends obsidian.Plugin {
+interface HugoConverterSettings {
+    gyazoAccessToken: string;
+}
+
+const DEFAULT_SETTINGS: HugoConverterSettings = {
+    gyazoAccessToken: ''
+}
+
+interface UploadedImages {
+    [key: string]: string;
+}
+
+interface GyazoResponse {
+    url: string;
+}
+
+export default class HugoConverterPlugin extends Plugin {
+    settings: HugoConverterSettings;
+
     async onload() {
         await this.loadSettings();
+
         // エディタ右クリックメニューに追加
         this.registerEvent(
             this.app.workspace.on('editor-menu', (menu, editor, view) => {
@@ -20,7 +39,7 @@ class HugoConverterPlugin extends obsidian.Plugin {
         // ファイルメニューに追加
         this.registerEvent(
             this.app.workspace.on('file-menu', (menu, file) => {
-                if (file instanceof obsidian.TFile && file.extension === 'md') {
+                if (file instanceof TFile && file.extension === 'md') {
                     menu.addItem((item) => {
                         item
                             .setTitle('Hugoブログに変換')
@@ -37,7 +56,7 @@ class HugoConverterPlugin extends obsidian.Plugin {
         this.addCommand({
             id: 'convert-to-hugo',
             name: 'Hugoブログに変換',
-            editorCallback: async (editor, view) => {
+            editorCallback: async (editor: Editor, view: MarkdownView) => {
                 await this.convertToHugo(view.file);
             }
         });
@@ -53,9 +72,9 @@ class HugoConverterPlugin extends obsidian.Plugin {
         await this.saveData(this.settings);
     }
 
-    async convertToHugo(file) {
+    async convertToHugo(file: TFile | null) {
         if (!file) {
-            new obsidian.Notice('ファイルが選択されていません');
+            new Notice('ファイルが選択されていません');
             return;
         }
 
@@ -63,7 +82,7 @@ class HugoConverterPlugin extends obsidian.Plugin {
             // ファイル内容を読み込み
             const content = await this.app.vault.read(file);
             
-            new obsidian.Notice('画像のアップロードを開始します...');
+            new Notice('画像のアップロードを開始します...');
             
             // 画像をGyazoにアップロード（完全に終わるまで待つ）
             const uploadedImages = await this.uploadImagesToGyazo(content);
@@ -71,17 +90,17 @@ class HugoConverterPlugin extends obsidian.Plugin {
             // アップロードが完了したら元の記事を更新
             let updatedContent = content;
             if (Object.keys(uploadedImages).length > 0) {
-                new obsidian.Notice('元の記事を更新中...');
+                new Notice('元の記事を更新中...');
                 await this.updateOriginalFile(file, uploadedImages);
                 
                 // 更新が完了してから再読み込み
                 updatedContent = await this.app.vault.read(file);
-                new obsidian.Notice('記事の更新が完了しました');
+                new Notice('記事の更新が完了しました');
             }
             
             // すべての更新が完了してから変換処理を開始
-            new obsidian.Notice('Hugo形式に変換中...');
-            const converted = await this.convertContent(updatedContent, file.basename, {});
+            new Notice('Hugo形式に変換中...');
+            const converted = await this.convertContent(updatedContent, file.basename);
             
             // 日付とスラッグを生成
             const date = new Date();
@@ -98,16 +117,16 @@ class HugoConverterPlugin extends obsidian.Plugin {
             a.click();
             URL.revokeObjectURL(url);
             
-            new obsidian.Notice(`変換完了: ${filename}`);
+            new Notice(`変換完了: ${filename}`);
         } catch (error) {
             console.error('変換エラー:', error);
-            new obsidian.Notice('変換中にエラーが発生しました');
+            new Notice('変換中にエラーが発生しました');
         }
     }
 
-    async uploadImagesToGyazo(content) {
+    async uploadImagesToGyazo(content: string): Promise<UploadedImages> {
         if (!this.settings.gyazoAccessToken) {
-            new obsidian.Notice('Gyazoアクセストークンが設定されていません');
+            new Notice('Gyazoアクセストークンが設定されていません');
             return {};
         }
 
@@ -117,7 +136,7 @@ class HugoConverterPlugin extends obsidian.Plugin {
         
         const standardMatches = [...content.matchAll(standardImageRegex)];
         const obsidianMatches = [...content.matchAll(obsidianImageRegex)];
-        const uploadedImages = {};
+        const uploadedImages: UploadedImages = {};
 
         // 標準的なMarkdown画像を処理
         for (const match of standardMatches) {
@@ -133,7 +152,7 @@ class HugoConverterPlugin extends obsidian.Plugin {
                 const normalizedPath = imagePath.startsWith('/') ? imagePath.substring(1) : imagePath;
                 const imageFile = this.app.vault.getAbstractFileByPath(normalizedPath);
                 
-                if (imageFile instanceof obsidian.TFile) {
+                if (imageFile instanceof TFile) {
                     // ファイルを読み込み
                     const arrayBuffer = await this.app.vault.readBinary(imageFile);
                     const blob = new Blob([arrayBuffer], { type: `image/${imageFile.extension}` });
@@ -149,9 +168,9 @@ class HugoConverterPlugin extends obsidian.Plugin {
                     });
                     
                     if (response.ok) {
-                        const data = await response.json();
+                        const data = await response.json() as GyazoResponse;
                         uploadedImages[imagePath] = data.url;
-                        new obsidian.Notice(`画像アップロード完了: ${imageFile.name}`);
+                        new Notice(`画像アップロード完了: ${imageFile.name}`);
                     } else {
                         console.error('Gyazoアップロードエラー:', response.statusText);
                     }
@@ -173,10 +192,10 @@ class HugoConverterPlugin extends obsidian.Plugin {
                     `${imageName}`
                 ];
                 
-                let imageFile = null;
+                let imageFile: TFile | null = null;
                 for (const path of possiblePaths) {
                     const file = this.app.vault.getAbstractFileByPath(path);
-                    if (file instanceof obsidian.TFile) {
+                    if (file instanceof TFile) {
                         imageFile = file;
                         break;
                     }
@@ -198,9 +217,9 @@ class HugoConverterPlugin extends obsidian.Plugin {
                     });
                     
                     if (response.ok) {
-                        const data = await response.json();
+                        const data = await response.json() as GyazoResponse;
                         uploadedImages[`![[${imageName}]]`] = data.url;
-                        new obsidian.Notice(`画像アップロード完了: ${imageFile.name}`);
+                        new Notice(`画像アップロード完了: ${imageFile.name}`);
                     } else {
                         console.error('Gyazoアップロードエラー:', response.statusText);
                     }
@@ -215,7 +234,7 @@ class HugoConverterPlugin extends obsidian.Plugin {
         return uploadedImages;
     }
 
-    async updateOriginalFile(file, uploadedImages) {
+    async updateOriginalFile(file: TFile, uploadedImages: UploadedImages) {
         try {
             let content = await this.app.vault.read(file);
             let updated = false;
@@ -242,15 +261,15 @@ class HugoConverterPlugin extends obsidian.Plugin {
             
             if (updated) {
                 await this.app.vault.modify(file, content);
-                new obsidian.Notice('元の記事の画像URLを更新しました');
+                new Notice('元の記事の画像URLを更新しました');
             }
         } catch (error) {
             console.error('元ファイルの更新エラー:', error);
-            new obsidian.Notice('元ファイルの更新に失敗しました');
+            new Notice('元ファイルの更新に失敗しました');
         }
     }
 
-    convertContent(content, filename) {
+    convertContent(content: string, filename: string): string {
         // タグを抽出
         const tagMatches = content.match(/^#\w+(\s+#\w+)*/m);
         const tags = tagMatches ? tagMatches[0].split(/\s+/).map(tag => tag.substring(1)) : [];
@@ -286,7 +305,7 @@ draft: false
         return `${frontmatter}\n\n${cleanContent}`;
     }
 
-    generateSlug(filename) {
+    generateSlug(filename: string): string {
         // ファイル名からスラッグを生成
         return filename
             .replace(/\.md$/, '')
@@ -298,23 +317,21 @@ draft: false
     }
 }
 
-const DEFAULT_SETTINGS = {
-    gyazoAccessToken: ''
-}
+class HugoConverterSettingTab extends PluginSettingTab {
+    plugin: HugoConverterPlugin;
 
-class HugoConverterSettingTab extends obsidian.PluginSettingTab {
-    constructor(app, plugin) {
+    constructor(app: App, plugin: HugoConverterPlugin) {
         super(app, plugin);
         this.plugin = plugin;
     }
 
-    display() {
+    display(): void {
         const {containerEl} = this;
         containerEl.empty();
 
         containerEl.createEl('h2', {text: 'Hugo Converter 設定'});
 
-        new obsidian.Setting(containerEl)
+        new Setting(containerEl)
             .setName('Gyazo アクセストークン')
             .setDesc('Gyazo APIのアクセストークンを入力してください。')
             .addText(text => text
@@ -336,5 +353,3 @@ class HugoConverterSettingTab extends obsidian.PluginSettingTab {
         ol.createEl('li', {text: '生成されたアクセストークンをコピー'});
     }
 }
-
-module.exports = HugoConverterPlugin;
