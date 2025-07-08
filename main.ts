@@ -84,6 +84,10 @@ export default class HugoConverterPlugin extends Plugin {
             // ファイル内容を読み込み
             const content = await this.app.vault.read(file);
             
+            // 既存のfrontmatterから初回変換日を取得
+            const existingFirstConverted = this.extractFirstConvertedDate(content);
+            const firstConvertedDate = existingFirstConverted || new Date();
+            
             new Notice('画像のアップロードを開始します...');
             
             // 画像をGyazoにアップロード（完全に終わるまで待つ）
@@ -100,13 +104,17 @@ export default class HugoConverterPlugin extends Plugin {
                 new Notice('記事の更新が完了しました');
             }
             
+            // 初回変換日をfrontmatterに追加（まだない場合）
+            if (!existingFirstConverted) {
+                updatedContent = await this.addFirstConvertedToFrontmatter(file, updatedContent, firstConvertedDate);
+            }
+            
             // すべての更新が完了してから変換処理を開始
             new Notice('Hugo形式に変換中...');
-            const converted = await this.convertContent(updatedContent, file.basename);
+            const converted = await this.convertContent(updatedContent, file.basename, firstConvertedDate);
             
-            // 日付とスラッグを生成
-            const date = new Date();
-            const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
+            // 日付とスラッグを生成（初回変換日を使用）
+            const dateStr = firstConvertedDate.toISOString().slice(0, 10).replace(/-/g, '');
             const slug = this.generateSlug(file.basename);
             const filename = `${dateStr}01-${slug}.md`;
             
@@ -127,6 +135,41 @@ export default class HugoConverterPlugin extends Plugin {
         } catch (error) {
             console.error('変換エラー:', error);
             new Notice('変換中にエラーが発生しました');
+        }
+    }
+
+    extractFirstConvertedDate(content: string): Date | null {
+        // frontmatterを解析
+        const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+        if (!frontmatterMatch) return null;
+        
+        const frontmatter = frontmatterMatch[1];
+        const firstConvertedMatch = frontmatter.match(/first_converted:\s*(.+)/);
+        
+        if (firstConvertedMatch) {
+            const dateStr = firstConvertedMatch[1].trim();
+            const date = new Date(dateStr);
+            return isNaN(date.getTime()) ? null : date;
+        }
+        
+        return null;
+    }
+
+    async addFirstConvertedToFrontmatter(file: TFile, content: string, date: Date): Promise<string> {
+        const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+        
+        if (frontmatterMatch) {
+            // 既存のfrontmatterに追加
+            const frontmatter = frontmatterMatch[1];
+            const newFrontmatter = `---\n${frontmatter}\nfirst_converted: ${date.toISOString()}\n---`;
+            const newContent = content.replace(/^---\n[\s\S]*?\n---/, newFrontmatter);
+            await this.app.vault.modify(file, newContent);
+            return newContent;
+        } else {
+            // frontmatterがない場合は新規作成
+            const newContent = `---\nfirst_converted: ${date.toISOString()}\n---\n\n${content}`;
+            await this.app.vault.modify(file, newContent);
+            return newContent;
         }
     }
 
@@ -275,7 +318,7 @@ export default class HugoConverterPlugin extends Plugin {
         }
     }
 
-    convertContent(content: string, filename: string): string {
+    convertContent(content: string, filename: string, firstConvertedDate: Date): string {
         // タグを抽出
         const tagMatches = content.match(/^#\w+(\s+#\w+)*/m);
         const tags = tagMatches ? tagMatches[0].split(/\s+/).map(tag => tag.substring(1)) : [];
@@ -285,6 +328,9 @@ export default class HugoConverterPlugin extends Plugin {
         if (tagMatches) {
             cleanContent = content.replace(/^#\w+(\s+#\w+)*\s*\n*/m, '');
         }
+        
+        // first_convertedを含むfrontmatterを削除
+        cleanContent = cleanContent.replace(/^---\n[\s\S]*?\n---\n*/m, '');
         
         // タイトルを取得（最初の#見出しまたはファイル名）
         const titleMatch = cleanContent.match(/^#\s+(.+)$/m);
@@ -298,11 +344,10 @@ export default class HugoConverterPlugin extends Plugin {
         
         // この時点で画像はすでにGyazo URLに置換されているので、特別な処理は不要
         
-        // frontmatterを生成
-        const date = new Date();
+        // frontmatterを生成（初回変換日を使用）
         const frontmatter = `---
 title: "${title}"
-date: ${date.toISOString()}
+date: ${firstConvertedDate.toISOString()}
 slug: ${this.generateSlug(filename)}
 tags:${tags.length > 0 ? '\n' + tags.map(tag => `  - ${tag}`).join('\n') : ' []'}
 draft: false
@@ -385,29 +430,6 @@ class HugoConverterSettingTab extends PluginSettingTab {
         this.plugin = plugin;
     }
 
-    async pickFolder(): Promise<string | null> {
-        try {
-            // Electronの環境かチェック
-            if ((window as any).require) {
-                const { remote } = (window as any).require('electron');
-                const result = await remote.dialog.showOpenDialog({
-                    properties: ['openDirectory']
-                });
-                
-                if (!result.canceled && result.filePaths.length > 0) {
-                    return result.filePaths[0];
-                }
-            } else {
-                // Electron環境でない場合は、Obsidianのフォルダーサジェスト機能を使用
-                new Notice('フォルダパスを手動で入力してください');
-            }
-        } catch (error) {
-            console.error('フォルダー選択エラー:', error);
-            new Notice('フォルダパスを手動で入力してください');
-        }
-        return null;
-    }
-
     display(): void {
         const {containerEl} = this;
         containerEl.empty();
@@ -425,6 +447,21 @@ class HugoConverterSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        containerEl.createEl('p', {
+            text: 'Gyazoアクセストークンの取得方法：',
+            cls: 'setting-item-description'
+        });
+        
+        const ol = containerEl.createEl('ol', {
+            cls: 'setting-item-description'
+        });
+        ol.createEl('li', {text: 'https://gyazo.com/oauth/applications にアクセス'});
+        ol.createEl('li', {text: '「新しいアプリケーションを登録」をクリック'});
+        ol.createEl('li', {text: 'アプリケーション名を入力して登録'});
+        ol.createEl('li', {text: '生成されたアクセストークンをコピー'});
+
+        containerEl.createEl('br');
+
         new Setting(containerEl)
             .setName('出力先ディレクトリ')
             .setDesc('変換したファイルの保存先ディレクトリを指定してください。空の場合はダウンロードになります。')
@@ -434,29 +471,6 @@ class HugoConverterSettingTab extends PluginSettingTab {
                 .onChange(async (value) => {
                     this.plugin.settings.outputDirectory = value;
                     await this.plugin.saveSettings();
-                }))
-            .addButton(button => button
-                .setButtonText('フォルダーを選択')
-                .onClick(async () => {
-                    const pickedFolder = await this.pickFolder();
-                    if (pickedFolder) {
-                        const textComponent = containerEl.querySelector('.setting-item:last-child input') as HTMLInputElement;
-                        if (textComponent) {
-                            textComponent.value = pickedFolder;
-                            this.plugin.settings.outputDirectory = pickedFolder;
-                            await this.plugin.saveSettings();
-                        }
-                    }
                 }));
-
-        containerEl.createEl('p', {
-            text: 'Gyazoアクセストークンの取得方法：'
-        });
-        
-        const ol = containerEl.createEl('ol');
-        ol.createEl('li', {text: 'https://gyazo.com/oauth/applications にアクセス'});
-        ol.createEl('li', {text: '「新しいアプリケーションを登録」をクリック'});
-        ol.createEl('li', {text: 'アプリケーション名を入力して登録'});
-        ol.createEl('li', {text: '生成されたアクセストークンをコピー'});
     }
 }
