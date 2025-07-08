@@ -2,10 +2,12 @@ import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, T
 
 interface HugoConverterSettings {
     gyazoAccessToken: string;
+    outputDirectory: string;
 }
 
 const DEFAULT_SETTINGS: HugoConverterSettings = {
-    gyazoAccessToken: ''
+    gyazoAccessToken: '',
+    outputDirectory: ''
 }
 
 interface UploadedImages {
@@ -108,16 +110,20 @@ export default class HugoConverterPlugin extends Plugin {
             const slug = this.generateSlug(file.basename);
             const filename = `${dateStr}01-${slug}.md`;
             
-            // ダウンロードフォルダに保存
-            const blob = new Blob([converted], { type: 'text/markdown' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            a.click();
-            URL.revokeObjectURL(url);
-            
-            new Notice(`変換完了: ${filename}`);
+            // 出力先ディレクトリが設定されている場合はそこに保存
+            if (this.settings.outputDirectory) {
+                await this.saveToDirectory(converted, filename);
+            } else {
+                // ダウンロードフォルダに保存
+                const blob = new Blob([converted], { type: 'text/markdown' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                a.click();
+                URL.revokeObjectURL(url);
+                new Notice(`変換完了: ${filename} (ダウンロード)`);
+            }
         } catch (error) {
             console.error('変換エラー:', error);
             new Notice('変換中にエラーが発生しました');
@@ -315,6 +321,60 @@ draft: false
             .replace(/-+/g, '-') // 連続ハイフンを1つに
             .trim();
     }
+
+    async saveToDirectory(content: string, filename: string) {
+        try {
+            // Node.jsのファイルシステムAPIを使用
+            const fs = require('fs').promises;
+            const path = require('path');
+            
+            // 出力先ディレクトリが存在するか確認
+            try {
+                await fs.access(this.settings.outputDirectory);
+            } catch {
+                // ディレクトリが存在しない場合は作成
+                await fs.mkdir(this.settings.outputDirectory, { recursive: true });
+            }
+            
+            // ファイルパスを構築
+            const filePath = path.join(this.settings.outputDirectory, filename);
+            
+            // ファイルを書き込み
+            await fs.writeFile(filePath, content, 'utf8');
+            
+            new Notice(`変換完了: ${filename} → ${filePath}`);
+        } catch (error) {
+            console.error('ファイル保存エラー:', error);
+            
+            // エラーが発生した場合は、Obsidian APIを使用して保存を試みる
+            try {
+                // Obsidianのファイルシステムを使用
+                const adapter = this.app.vault.adapter;
+                if (adapter && 'fs' in adapter) {
+                    const fs = (adapter as any).fs;
+                    const path = require('path');
+                    
+                    // ディレクトリの存在確認と作成
+                    if (!await adapter.exists(this.settings.outputDirectory)) {
+                        await adapter.mkdir(this.settings.outputDirectory);
+                    }
+                    
+                    // ファイルパスを構築
+                    const filePath = path.join(this.settings.outputDirectory, filename);
+                    
+                    // ファイルを書き込み
+                    await adapter.write(filePath, content);
+                    
+                    new Notice(`変換完了: ${filename} → ${filePath}`);
+                } else {
+                    throw new Error('ファイルシステムにアクセスできません');
+                }
+            } catch (fallbackError) {
+                console.error('代替保存方法も失敗:', fallbackError);
+                new Notice('ファイルの保存に失敗しました。ディレクトリパスを確認してください。');
+            }
+        }
+    }
 }
 
 class HugoConverterSettingTab extends PluginSettingTab {
@@ -323,6 +383,29 @@ class HugoConverterSettingTab extends PluginSettingTab {
     constructor(app: App, plugin: HugoConverterPlugin) {
         super(app, plugin);
         this.plugin = plugin;
+    }
+
+    async pickFolder(): Promise<string | null> {
+        try {
+            // Electronの環境かチェック
+            if ((window as any).require) {
+                const { remote } = (window as any).require('electron');
+                const result = await remote.dialog.showOpenDialog({
+                    properties: ['openDirectory']
+                });
+                
+                if (!result.canceled && result.filePaths.length > 0) {
+                    return result.filePaths[0];
+                }
+            } else {
+                // Electron環境でない場合は、Obsidianのフォルダーサジェスト機能を使用
+                new Notice('フォルダパスを手動で入力してください');
+            }
+        } catch (error) {
+            console.error('フォルダー選択エラー:', error);
+            new Notice('フォルダパスを手動で入力してください');
+        }
+        return null;
     }
 
     display(): void {
@@ -340,6 +423,30 @@ class HugoConverterSettingTab extends PluginSettingTab {
                 .onChange(async (value) => {
                     this.plugin.settings.gyazoAccessToken = value;
                     await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('出力先ディレクトリ')
+            .setDesc('変換したファイルの保存先ディレクトリを指定してください。空の場合はダウンロードになります。')
+            .addText(text => text
+                .setPlaceholder('例: /Users/username/Documents/hugo-blog')
+                .setValue(this.plugin.settings.outputDirectory)
+                .onChange(async (value) => {
+                    this.plugin.settings.outputDirectory = value;
+                    await this.plugin.saveSettings();
+                }))
+            .addButton(button => button
+                .setButtonText('フォルダーを選択')
+                .onClick(async () => {
+                    const pickedFolder = await this.pickFolder();
+                    if (pickedFolder) {
+                        const textComponent = containerEl.querySelector('.setting-item:last-child input') as HTMLInputElement;
+                        if (textComponent) {
+                            textComponent.value = pickedFolder;
+                            this.plugin.settings.outputDirectory = pickedFolder;
+                            await this.plugin.saveSettings();
+                        }
+                    }
                 }));
 
         containerEl.createEl('p', {
