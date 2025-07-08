@@ -1,4 +1,6 @@
 import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 
 interface HugoConverterSettings {
     gyazoAccessToken: string;
@@ -370,8 +372,6 @@ draft: false
     async saveToDirectory(content: string, filename: string) {
         try {
             // Node.jsのファイルシステムAPIを使用
-            const fs = require('fs').promises;
-            const path = require('path');
             
             // 出力先ディレクトリが存在するか確認
             try {
@@ -396,8 +396,7 @@ draft: false
                 // Obsidianのファイルシステムを使用
                 const adapter = this.app.vault.adapter;
                 if (adapter && 'fs' in adapter) {
-                    const fs = (adapter as any).fs;
-                    const path = require('path');
+                    // fs変数は使用しないので削除
                     
                     // ディレクトリの存在確認と作成
                     if (!await adapter.exists(this.settings.outputDirectory)) {
