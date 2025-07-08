@@ -1,9 +1,9 @@
 {
 	"id": "hugo-converter",
 	"name": "Hugo Converter",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"minAppVersion": "0.15.0",
-	"description": "ObsidianのノートをHugoブログ形式に変換するプラグイン",
+	"description": "A plugin to convert Obsidian notes to Hugo blog format",
 	"author": "kyokomi",
 	"authorUrl": "https://github.com/kyokomi",
 	"isDesktopOnly": false

@@ -1,67 +1,67 @@
 # Hugo Converter Plugin for Obsidian
 
-ObsidianのノートをHugoブログ形式に変換するプラグインです。
+A plugin that converts Obsidian notes to Hugo blog format.
 
-## 機能
+## Features
 
-- 📝 Obsidianのマークダウン記事をHugo形式に変換
-- 🏷️ タグの自動変換（`#タグ名` → YAML frontmatter）
-- 🖼️ 画像の自動Gyazoアップロード
-- 🔗 内部リンクの変換
-- 📅 自動的なfrontmatter生成
-- 💾 元記事の画像URLを自動更新
+- 📝 Convert Obsidian markdown articles to Hugo format
+- 🏷️ Automatic tag conversion (`#tagname` → YAML frontmatter)
+- 🖼️ Automatic image upload to Gyazo
+- 🔗 Internal link conversion
+- 📅 Automatic frontmatter generation
+- 💾 Automatic image URL update in source article
 
-## インストール
+## Installation
 
-### 手動インストール
+### Manual Installation
 
-1. このリポジトリをクローンまたはダウンロード
-2. `main.js`、`manifest.json`、`styles.css`を`.obsidian/plugins/hugo-converter/`にコピー
-3. Obsidianを再起動
-4. 設定 → コミュニティプラグイン → Hugo Converterを有効化
+1. Clone or download this repository
+2. Copy `main.js`, `manifest.json`, and `styles.css` to `.obsidian/plugins/hugo-converter/`
+3. Restart Obsidian
+4. Go to Settings → Community plugins → Enable Hugo Converter
 
-### Obsidianコミュニティプラグイン（予定）
+### Obsidian Community Plugin (Coming Soon)
 
-コミュニティプラグインとして申請予定です。
+This plugin will be submitted to the Community Plugins repository.
 
-## 設定
+## Configuration
 
-1. Obsidianの設定 → コミュニティプラグイン → Hugo Converter → 設定
-2. Gyazoアクセストークンを取得して入力：
-   - https://gyazo.com/oauth/applications にアクセス
-   - 「新しいアプリケーションを登録」をクリック
-   - アプリケーション名を入力して登録
-   - 生成されたアクセストークンをコピーして設定に貼り付け
+1. Go to Obsidian Settings → Community plugins → Hugo Converter → Settings
+2. Get and enter your Gyazo access token:
+   - Visit https://gyazo.com/oauth/applications
+   - Click "Register new application"
+   - Enter an application name and register
+   - Copy the generated access token and paste it into the settings
 
-## 使い方
+## Usage
 
-1. 変換したい記事で以下のいずれかの方法：
-   - エディタで右クリック → 「Hugoブログに変換」
-   - ファイルエクスプローラーで右クリック → 「Hugoブログに変換」
-   - コマンドパレット（Cmd/Ctrl+P）→ 「Hugoブログに変換」
+1. To convert an article, use one of the following methods:
+   - Right-click in the editor → "Convert to Hugo blog"
+   - Right-click in file explorer → "Convert to Hugo blog"
+   - Command palette (Cmd/Ctrl+P) → "Convert to Hugo blog"
 
-2. 画像がある場合は自動でGyazoにアップロードされます
-3. 変換されたファイルが`YYYYMMDD01-slug.md`形式でダウンロードされます
+2. Images will be automatically uploaded to Gyazo
+3. The converted file will be downloaded in `YYYYMMDD01-slug.md` format
 
-## 変換機能
+## Conversion Features
 
-### タグ変換
+### Tag Conversion
 ```markdown
-#Web #管理ツール
+#Web #Management-Tools
 
-# 記事タイトル
+# Article Title
 ```
 ↓
 ```yaml
 ---
-title: "記事タイトル"
+title: "Article Title"
 tags:
   - Web
-  - 管理ツール
+  - Management-Tools
 ---
 ```
 
-### 画像変換
+### Image Conversion
 ```markdown
 ![[Pasted image 20220529164221.png]]
 ```
@@ -70,25 +70,25 @@ tags:
 ![Pasted image 20220529164221](https://gyazo.com/xxx.png)
 ```
 
-### 内部リンク変換
+### Internal Link Conversion
 ```markdown
-[[記事名]]
+[[Article Name]]
 ```
 ↓
 ```markdown
-記事名
+Article Name
 ```
 
-## 開発
+## Development
 
 ```bash
-# 依存関係のインストール
+# Install dependencies
 npm install
 
-# 開発時（ウォッチモード）
+# Development (watch mode)
 npm run dev
 
-# ビルド
+# Build
 npm run build
 
 # Lint
@@ -96,19 +96,19 @@ npm run lint
 npm run lint:fix
 ```
 
-## リリース
+## Release
 
-GitHub Actionsを使用して自動リリースします：
+Automatic release using GitHub Actions:
 
-1. `package.json`のバージョンを更新
-2. `npm run version`でmanifest.jsonとversions.jsonを更新
-3. Gitタグを作成してpush
-4. GitHub Actionsが自動でリリースを作成
+1. Update version in `package.json`
+2. Run `npm run version` to update manifest.json and versions.json
+3. Create and push a Git tag
+4. GitHub Actions will automatically create a release
 
-## ライセンス
+## License
 
 MIT License
 
-## 作者
+## Author
 
 kyokomi
