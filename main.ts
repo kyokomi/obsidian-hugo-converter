@@ -20,6 +20,7 @@ interface GyazoResponse {
 
 export default class HugoConverterPlugin extends Plugin {
     settings: HugoConverterSettings;
+    private statusBarItem: HTMLElement | null = null;
 
     async onload() {
         await this.loadSettings();
@@ -72,6 +73,11 @@ export default class HugoConverterPlugin extends Plugin {
 
     async saveSettings() {
         await this.saveData(this.settings);
+    }
+
+    onunload() {
+        // プラグイン無効化時にStatus Barアイテムをクリーンアップ
+        this.hideStatusBarProgress();
     }
 
     async convertToHugo(file: TFile | null) {
@@ -228,11 +234,24 @@ export default class HugoConverterPlugin extends Plugin {
         }
     }
 
-    createProgressNotice(current: number, total: number, message: string): Notice {
+    updateStatusBarProgress(current: number, total: number, message: string): void {
+        if (!this.statusBarItem) {
+            this.statusBarItem = this.addStatusBarItem();
+        }
+        
         const percentage = Math.round((current / total) * 100);
         const progressBar = '█'.repeat(Math.floor(percentage / 5)) + '░'.repeat(20 - Math.floor(percentage / 5));
-        const noticeText = `${message} [${progressBar}] ${current}/${total} (${percentage}%)`;
-        return new Notice(noticeText, 0); // 0 = 自動で消えない
+        const statusText = `${message} [${progressBar}] ${current}/${total}`;
+        
+        this.statusBarItem.setText(statusText);
+        this.statusBarItem.title = `${message}: ${percentage}% complete`;
+    }
+
+    hideStatusBarProgress(): void {
+        if (this.statusBarItem) {
+            this.statusBarItem.remove();
+            this.statusBarItem = null;
+        }
     }
 
     async uploadImagesInContent(content: string): Promise<UploadedImages> {
@@ -263,7 +282,7 @@ export default class HugoConverterPlugin extends Plugin {
         }
 
         let currentCount = 0;
-        let progressNotice = this.createProgressNotice(currentCount, totalImages, 'Uploading images');
+        this.updateStatusBarProgress(currentCount, totalImages, 'Uploading images');
 
         // 標準的なMarkdown画像を処理
         for (const match of filteredStandardMatches) {
@@ -284,10 +303,9 @@ export default class HugoConverterPlugin extends Plugin {
                 console.error('画像処理エラー:', error);
             }
 
-            // プログレスバーを更新
+            // ステータスバーを更新
             currentCount++;
-            progressNotice.hide();
-            progressNotice = this.createProgressNotice(currentCount, totalImages, 'Uploading images');
+            this.updateStatusBarProgress(currentCount, totalImages, 'Uploading images');
         }
 
         // Obsidian形式の画像を処理
@@ -323,14 +341,13 @@ export default class HugoConverterPlugin extends Plugin {
                 console.error('画像処理エラー:', error);
             }
 
-            // プログレスバーを更新
+            // ステータスバーを更新
             currentCount++;
-            progressNotice.hide();
-            progressNotice = this.createProgressNotice(currentCount, totalImages, 'Uploading images');
+            this.updateStatusBarProgress(currentCount, totalImages, 'Uploading images');
         }
 
-        // 完了通知
-        progressNotice.hide();
+        // 完了処理
+        this.hideStatusBarProgress();
         // 画像アップロード完了（通知削除）
 
         return uploadedImages;
