@@ -88,20 +88,18 @@ export default class HugoConverterPlugin extends Plugin {
             const existingFirstConverted = this.extractFirstConvertedDate(content);
             const firstConvertedDate = existingFirstConverted || new Date();
 
-            new Notice('Starting image upload...');
-
+            new Notice('Converting to Hugo format...');
+            
             // 画像をGyazoにアップロード（完全に終わるまで待つ）
             const uploadedImages = await this.uploadImagesInContent(content);
 
             // アップロードが完了したら元の記事を更新
             let updatedContent = content;
             if (Object.keys(uploadedImages).length > 0) {
-                new Notice('Updating original article...');
                 await this.updateOriginalFile(file, uploadedImages);
 
                 // 更新が完了してから再読み込み
                 updatedContent = await this.app.vault.read(file);
-                new Notice('Article update completed');
             }
 
             // 初回変換日をfrontmatterに追加（まだない場合）
@@ -110,7 +108,6 @@ export default class HugoConverterPlugin extends Plugin {
             }
 
             // すべての更新が完了してから変換処理を開始
-            new Notice('Converting to Hugo format...');
             const converted = await this.convertContent(updatedContent, file.basename, firstConvertedDate);
 
             // 日付とスラッグを生成（初回変換日を使用）
@@ -219,7 +216,7 @@ export default class HugoConverterPlugin extends Plugin {
 
             if (response.status === 200) {
                 const data = response.json as GyazoResponse;
-                new Notice(`Image uploaded: ${imageFile.name}`);
+                // 画像アップロード完了（通知削除）
                 return data.url;
             } else {
                 console.error('Gyazoアップロードエラー:', response.status);
@@ -229,6 +226,13 @@ export default class HugoConverterPlugin extends Plugin {
             console.error('画像処理エラー:', error);
             return null;
         }
+    }
+
+    createProgressNotice(current: number, total: number, message: string): Notice {
+        const percentage = Math.round((current / total) * 100);
+        const progressBar = '█'.repeat(Math.floor(percentage / 5)) + '░'.repeat(20 - Math.floor(percentage / 5));
+        const noticeText = `${message} [${progressBar}] ${current}/${total} (${percentage}%)`;
+        return new Notice(noticeText, 0); // 0 = 自動で消えない
     }
 
     async uploadImagesInContent(content: string): Promise<UploadedImages> {
@@ -245,14 +249,25 @@ export default class HugoConverterPlugin extends Plugin {
         const obsidianMatches = [...content.matchAll(obsidianImageRegex)];
         const uploadedImages: UploadedImages = {};
 
-        // 標準的なMarkdown画像を処理
-        for (const match of standardMatches) {
+        // 処理対象の画像をフィルタリング（外部URLを除外）
+        const filteredStandardMatches = standardMatches.filter(match => {
             const imagePath = match[2];
+            return !imagePath.startsWith('http://') && !imagePath.startsWith('https://');
+        });
 
-            // 外部URLの場合はスキップ
-            if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
-                continue;
-            }
+        const totalImages = filteredStandardMatches.length + obsidianMatches.length;
+        
+        if (totalImages === 0) {
+            // 画像がない場合は静かに処理を続行
+            return {};
+        }
+
+        let currentCount = 0;
+        let progressNotice = this.createProgressNotice(currentCount, totalImages, 'Uploading images');
+
+        // 標準的なMarkdown画像を処理
+        for (const match of filteredStandardMatches) {
+            const imagePath = match[2];
 
             try {
                 // Obsidianの画像ファイルを取得
@@ -268,6 +283,11 @@ export default class HugoConverterPlugin extends Plugin {
             } catch (error) {
                 console.error('画像処理エラー:', error);
             }
+
+            // プログレスバーを更新
+            currentCount++;
+            progressNotice.hide();
+            progressNotice = this.createProgressNotice(currentCount, totalImages, 'Uploading images');
         }
 
         // Obsidian形式の画像を処理
@@ -302,7 +322,16 @@ export default class HugoConverterPlugin extends Plugin {
             } catch (error) {
                 console.error('画像処理エラー:', error);
             }
+
+            // プログレスバーを更新
+            currentCount++;
+            progressNotice.hide();
+            progressNotice = this.createProgressNotice(currentCount, totalImages, 'Uploading images');
         }
+
+        // 完了通知
+        progressNotice.hide();
+        // 画像アップロード完了（通知削除）
 
         return uploadedImages;
     }
@@ -334,7 +363,7 @@ export default class HugoConverterPlugin extends Plugin {
 
             if (updated) {
                 await this.app.vault.modify(file, content);
-                new Notice('Updated image URLs in original article');
+                // 画像URL更新完了（通知削除）
             }
         } catch (error) {
             console.error('元ファイルの更新エラー:', error);
