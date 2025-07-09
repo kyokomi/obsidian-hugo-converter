@@ -3,7 +3,7 @@
 	"name": "Hugo Converter",
 	"version": "0.2.0",
 	"minAppVersion": "0.15.0",
-	"description": "A plugin to convert Obsidian notes to Hugo blog format",
+	"description": "Convert Hugo blog format",
 	"author": "kyokomi",
 	"authorUrl": "https://github.com/kyokomi",
 	"isDesktopOnly": false
