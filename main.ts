@@ -91,7 +91,7 @@ export default class HugoConverterPlugin extends Plugin {
             new Notice('Starting image upload...');
 
             // 画像をGyazoにアップロード（完全に終わるまで待つ）
-            const uploadedImages = await this.uploadImagesToGyazo(content);
+            const uploadedImages = await this.uploadImagesInContent(content);
 
             // アップロードが完了したら元の記事を更新
             let updatedContent = content;
@@ -173,7 +173,65 @@ export default class HugoConverterPlugin extends Plugin {
         }
     }
 
-    async uploadImagesToGyazo(content: string): Promise<UploadedImages> {
+    async uploadImageToGyazo(imageFile: TFile): Promise<string | null> {
+        try {
+            // ファイルを読み込み
+            const arrayBuffer = await this.app.vault.readBinary(imageFile);
+
+            // multipart/form-dataを手動で作成
+            const boundary = '----FormBoundary' + Math.random().toString(36).substring(2);
+            const encoder = new TextEncoder();
+
+            // 各パートを作成
+            const parts: ArrayBuffer[] = [];
+
+            // access_tokenパート
+            const tokenPart = `------${boundary}\r\nContent-Disposition: form-data; name="access_token"\r\n\r\n${this.settings.gyazoAccessToken}\r\n`;
+            parts.push(encoder.encode(tokenPart).buffer);
+
+            // imagedataパート
+            const imageHeader = `------${boundary}\r\nContent-Disposition: form-data; name="imagedata"; filename="${imageFile.name}"\r\nContent-Type: image/${imageFile.extension}\r\n\r\n`;
+            parts.push(encoder.encode(imageHeader).buffer);
+            parts.push(arrayBuffer);
+            parts.push(encoder.encode('\r\n').buffer);
+
+            // 終端
+            const footer = `------${boundary}--\r\n`;
+            parts.push(encoder.encode(footer).buffer);
+
+            // すべてのパートを結合
+            const totalLength = parts.reduce((acc, part) => acc + part.byteLength, 0);
+            const body = new Uint8Array(totalLength);
+            let offset = 0;
+            for (const part of parts) {
+                body.set(new Uint8Array(part), offset);
+                offset += part.byteLength;
+            }
+
+            const response = await requestUrl({
+                url: 'https://upload.gyazo.com/api/upload',
+                method: 'POST',
+                headers: {
+                    'Content-Type': `multipart/form-data; boundary=----${boundary}`
+                },
+                body: body.buffer
+            });
+
+            if (response.status === 200) {
+                const data = response.json as GyazoResponse;
+                new Notice(`Image uploaded: ${imageFile.name}`);
+                return data.url;
+            } else {
+                console.error('Gyazoアップロードエラー:', response.status);
+                return null;
+            }
+        } catch (error) {
+            console.error('画像処理エラー:', error);
+            return null;
+        }
+    }
+
+    async uploadImagesInContent(content: string): Promise<UploadedImages> {
         if (!this.settings.gyazoAccessToken) {
             new Notice('Gyazo access token is not configured');
             return {};
@@ -202,54 +260,9 @@ export default class HugoConverterPlugin extends Plugin {
                 const imageFile = this.app.vault.getAbstractFileByPath(normalizedPath);
 
                 if (imageFile instanceof TFile) {
-                    // ファイルを読み込み
-                    const arrayBuffer = await this.app.vault.readBinary(imageFile);
-                    
-                    // multipart/form-dataを手動で作成
-                    const boundary = '----FormBoundary' + Math.random().toString(36).substring(2);
-                    const encoder = new TextEncoder();
-                    
-                    // 各パートを作成
-                    const parts: ArrayBuffer[] = [];
-                    
-                    // access_tokenパート
-                    const tokenPart = `------${boundary}\r\nContent-Disposition: form-data; name="access_token"\r\n\r\n${this.settings.gyazoAccessToken}\r\n`;
-                    parts.push(encoder.encode(tokenPart).buffer);
-                    
-                    // imagedataパート
-                    const imageHeader = `------${boundary}\r\nContent-Disposition: form-data; name="imagedata"; filename="${imageFile.name}"\r\nContent-Type: image/${imageFile.extension}\r\n\r\n`;
-                    parts.push(encoder.encode(imageHeader).buffer);
-                    parts.push(arrayBuffer);
-                    parts.push(encoder.encode('\r\n').buffer);
-                    
-                    // 終端
-                    const footer = `------${boundary}--\r\n`;
-                    parts.push(encoder.encode(footer).buffer);
-                    
-                    // すべてのパートを結合
-                    const totalLength = parts.reduce((acc, part) => acc + part.byteLength, 0);
-                    const body = new Uint8Array(totalLength);
-                    let offset = 0;
-                    for (const part of parts) {
-                        body.set(new Uint8Array(part), offset);
-                        offset += part.byteLength;
-                    }
-
-                    const response = await requestUrl({
-                        url: 'https://upload.gyazo.com/api/upload',
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': `multipart/form-data; boundary=----${boundary}`
-                        },
-                        body: body.buffer
-                    });
-
-                    if (response.status === 200) {
-                        const data = response.json as GyazoResponse;
-                        uploadedImages[imagePath] = data.url;
-                        new Notice(`Image uploaded: ${imageFile.name}`);
-                    } else {
-                        console.error('Gyazoアップロードエラー:', response.status);
+                    const uploadedUrl = await this.uploadImageToGyazo(imageFile);
+                    if (uploadedUrl) {
+                        uploadedImages[imagePath] = uploadedUrl;
                     }
                 }
             } catch (error) {
@@ -279,54 +292,9 @@ export default class HugoConverterPlugin extends Plugin {
                 }
 
                 if (imageFile) {
-                    // ファイルを読み込み
-                    const arrayBuffer = await this.app.vault.readBinary(imageFile);
-                    
-                    // multipart/form-dataを手動で作成
-                    const boundary = '----FormBoundary' + Math.random().toString(36).substring(2);
-                    const encoder = new TextEncoder();
-                    
-                    // 各パートを作成
-                    const parts: ArrayBuffer[] = [];
-                    
-                    // access_tokenパート
-                    const tokenPart = `------${boundary}\r\nContent-Disposition: form-data; name="access_token"\r\n\r\n${this.settings.gyazoAccessToken}\r\n`;
-                    parts.push(encoder.encode(tokenPart).buffer);
-                    
-                    // imagedataパート
-                    const imageHeader = `------${boundary}\r\nContent-Disposition: form-data; name="imagedata"; filename="${imageFile.name}"\r\nContent-Type: image/${imageFile.extension}\r\n\r\n`;
-                    parts.push(encoder.encode(imageHeader).buffer);
-                    parts.push(arrayBuffer);
-                    parts.push(encoder.encode('\r\n').buffer);
-                    
-                    // 終端
-                    const footer = `------${boundary}--\r\n`;
-                    parts.push(encoder.encode(footer).buffer);
-                    
-                    // すべてのパートを結合
-                    const totalLength = parts.reduce((acc, part) => acc + part.byteLength, 0);
-                    const body = new Uint8Array(totalLength);
-                    let offset = 0;
-                    for (const part of parts) {
-                        body.set(new Uint8Array(part), offset);
-                        offset += part.byteLength;
-                    }
-
-                    const response = await requestUrl({
-                        url: 'https://upload.gyazo.com/api/upload',
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': `multipart/form-data; boundary=----${boundary}`
-                        },
-                        body: body.buffer
-                    });
-
-                    if (response.status === 200) {
-                        const data = response.json as GyazoResponse;
-                        uploadedImages[`![[${imageName}]]`] = data.url;
-                        new Notice(`Image uploaded: ${imageFile.name}`);
-                    } else {
-                        console.error('Gyazoアップロードエラー:', response.status);
+                    const uploadedUrl = await this.uploadImageToGyazo(imageFile);
+                    if (uploadedUrl) {
+                        uploadedImages[`![[${imageName}]]`] = uploadedUrl;
                     }
                 } else {
                     console.error('画像ファイルが見つかりません:', imageName);
@@ -426,7 +394,7 @@ draft: false
     async saveToDirectory(content: string, filename: string) {
         try {
             const adapter = this.app.vault.adapter;
-            
+
             // FileSystemAdapterの場合のみ処理を続行
             if (adapter instanceof FileSystemAdapter) {
                 const outputDir = this.settings.outputDirectory;
@@ -436,23 +404,23 @@ draft: false
                 // @ts-ignore: require is available in Obsidian environment
                 // eslint-disable-next-line @typescript-eslint/no-var-requires
                 const nodePath = require('path');
-                
+
                 // 絶対パスに変換
-                const absoluteOutputDir = nodePath.isAbsolute(outputDir) 
-                    ? outputDir 
+                const absoluteOutputDir = nodePath.isAbsolute(outputDir)
+                    ? outputDir
                     : nodePath.join(adapter.getBasePath(), outputDir);
-                
+
                 // ディレクトリの存在確認と作成
                 if (!fs.existsSync(absoluteOutputDir)) {
                     fs.mkdirSync(absoluteOutputDir, { recursive: true });
                 }
-                
+
                 // ファイルパスを構築
                 const filePath = nodePath.join(absoluteOutputDir, filename);
-                
+
                 // ファイルを書き込み
                 fs.writeFileSync(filePath, content, 'utf8');
-                
+
                 new Notice(`Conversion complete: ${filename} → ${filePath}`);
             } else {
                 // FileSystemAdapterが利用できない場合はエラー
