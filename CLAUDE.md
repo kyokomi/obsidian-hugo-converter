@@ -24,10 +24,14 @@ ObsidianのノートをHugoブログ形式に変換するプラグイン。
 4. 動作テスト
 
 ### リリース時
-1. `package.json` のバージョン更新
-2. `npm run version` でmanifest.json更新
-3. `git tag` でタグ作成・push
-4. GitHub Actionsで自動リリース
+1. バージョン更新（以下のいずれかを実行）
+   - `npm run bump-patch` - パッチバージョンを上げる (例: 0.2.1 → 0.2.2)
+   - `npm run bump-minor` - マイナーバージョンを上げる (例: 0.2.1 → 0.3.0)
+   - `npm run bump-major` - メジャーバージョンを上げる (例: 0.2.1 → 1.0.0)
+2. 変更をコミット
+3. `git tag 0.x.x` でタグ作成
+4. `git push && git push --tags` でpush
+5. GitHub Actionsで自動リリース
 
 ## 技術仕様
 
