@@ -14,6 +14,7 @@ ObsidianのノートをHugoブログ形式に変換するプラグイン。
 ## コーディング規約
 - .editorconfig準拠
 - ESLint準拠
+- [Obsidian Plugin Guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines)準拠
 
 ## 開発フロー
 

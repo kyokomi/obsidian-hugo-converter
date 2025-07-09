@@ -1,6 +1,4 @@
-import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, requestUrl } from 'obsidian';
-import * as fs from 'fs/promises';
-import * as path from 'path';
+import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, requestUrl, FileSystemAdapter } from 'obsidian';
 
 interface HugoConverterSettings {
     gyazoAccessToken: string;
@@ -427,52 +425,43 @@ draft: false
 
     async saveToDirectory(content: string, filename: string) {
         try {
-            // Node.jsのファイルシステムAPIを使用
-
-            // 出力先ディレクトリが存在するか確認
-            try {
-                await fs.access(this.settings.outputDirectory);
-            } catch {
-                // ディレクトリが存在しない場合は作成
-                await fs.mkdir(this.settings.outputDirectory, { recursive: true });
+            const adapter = this.app.vault.adapter;
+            
+            // FileSystemAdapterの場合のみ処理を続行
+            if (adapter instanceof FileSystemAdapter) {
+                const outputDir = this.settings.outputDirectory;
+                // @ts-ignore: require is available in Obsidian environment
+                // eslint-disable-next-line @typescript-eslint/no-var-requires
+                const fs = require('fs');
+                // @ts-ignore: require is available in Obsidian environment
+                // eslint-disable-next-line @typescript-eslint/no-var-requires
+                const nodePath = require('path');
+                
+                // 絶対パスに変換
+                const absoluteOutputDir = nodePath.isAbsolute(outputDir) 
+                    ? outputDir 
+                    : nodePath.join(adapter.getBasePath(), outputDir);
+                
+                // ディレクトリの存在確認と作成
+                if (!fs.existsSync(absoluteOutputDir)) {
+                    fs.mkdirSync(absoluteOutputDir, { recursive: true });
+                }
+                
+                // ファイルパスを構築
+                const filePath = nodePath.join(absoluteOutputDir, filename);
+                
+                // ファイルを書き込み
+                fs.writeFileSync(filePath, content, 'utf8');
+                
+                new Notice(`Conversion complete: ${filename} → ${filePath}`);
+            } else {
+                // FileSystemAdapterが利用できない場合はエラー
+                new Notice('Error: External directory writing is not supported in this environment');
+                throw new Error('FileSystemAdapter is not available');
             }
-
-            // ファイルパスを構築
-            const filePath = path.join(this.settings.outputDirectory, filename);
-
-            // ファイルを書き込み
-            await fs.writeFile(filePath, content, 'utf8');
-
-            new Notice(`Conversion complete: ${filename} → ${filePath}`);
         } catch (error) {
             console.error('ファイル保存エラー:', error);
-
-            // エラーが発生した場合は、Obsidian APIを使用して保存を試みる
-            try {
-                // Obsidianのファイルシステムを使用
-                const adapter = this.app.vault.adapter;
-                if (adapter && 'fs' in adapter) {
-                    // fs変数は使用しないので削除
-
-                    // ディレクトリの存在確認と作成
-                    if (!await adapter.exists(this.settings.outputDirectory)) {
-                        await adapter.mkdir(this.settings.outputDirectory);
-                    }
-
-                    // ファイルパスを構築
-                    const filePath = path.join(this.settings.outputDirectory, filename);
-
-                    // ファイルを書き込み
-                    await adapter.write(filePath, content);
-
-                    new Notice(`Conversion complete: ${filename} → ${filePath}`);
-                } else {
-                    throw new Error('Cannot access file system');
-                }
-            } catch (fallbackError) {
-                console.error('代替保存方法も失敗:', fallbackError);
-                new Notice('Failed to save file. Please check the directory path.');
-            }
+            new Notice('Failed to save file. Please check the directory path.');
         }
     }
 }
