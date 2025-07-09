@@ -1,13 +1,13 @@
 {
 	"name": "obsidian-hugo-converter",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"description": "Convert Obsidian notes to Hugo blog format",
 	"main": "main.js",
 	"scripts": {
 		"dev": "mkdir -p build && node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production && npm run postbuild",
 		"postbuild": "mkdir -p build && cp manifest.json build/ && cp styles.css build/ 2>/dev/null || true",
-		"version": "node version-bump.mjs && git add manifest.json versions.json",
+		"version": "node version-bump.mjs && git add package.json package-lock.json manifest.json versions.json",
 		"bump-patch": "npm version patch --no-git-tag-version && npm run version",
 		"bump-minor": "npm version minor --no-git-tag-version && npm run version",
 		"bump-major": "npm version major --no-git-tag-version && npm run version",
