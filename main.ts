@@ -95,7 +95,7 @@ export default class HugoConverterPlugin extends Plugin {
             const firstConvertedDate = existingFirstConverted || new Date();
 
             new Notice('Converting to Hugo format...');
-            
+
             // 画像をGyazoにアップロード（完全に終わるまで待つ）
             const uploadedImages = await this.uploadImagesInContent(content);
 
@@ -117,9 +117,8 @@ export default class HugoConverterPlugin extends Plugin {
             const converted = await this.convertContent(updatedContent, file.basename, firstConvertedDate);
 
             // 日付とスラッグを生成（初回変換日を使用）
-            const dateStr = firstConvertedDate.toISOString().slice(0, 10).replace(/-/g, '');
             const slug = this.generateSlug(file.basename, firstConvertedDate);
-            const filename = `${dateStr}01-${slug}.md`;
+            const filename = `${slug}.md`;
 
             // 出力先ディレクトリが設定されている場合はそこに保存
             if (this.settings.outputDirectory) {
@@ -238,11 +237,11 @@ export default class HugoConverterPlugin extends Plugin {
         if (!this.statusBarItem) {
             this.statusBarItem = this.addStatusBarItem();
         }
-        
+
         const percentage = Math.round((current / total) * 100);
         const progressBar = '█'.repeat(Math.floor(percentage / 5)) + '░'.repeat(20 - Math.floor(percentage / 5));
         const statusText = `${message} [${progressBar}] ${current}/${total}`;
-        
+
         this.statusBarItem.setText(statusText);
         this.statusBarItem.title = `${message}: ${percentage}% complete`;
     }
@@ -275,7 +274,7 @@ export default class HugoConverterPlugin extends Plugin {
         });
 
         const totalImages = filteredStandardMatches.length + obsidianMatches.length;
-        
+
         if (totalImages === 0) {
             // 画像がない場合は静かに処理を続行
             return {};
@@ -436,7 +435,7 @@ draft: false
     generateSlug(filename: string, date: Date): string {
         // 日付をYYYYMMDD形式でフォーマット
         const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
-        
+
         // ファイル名からスラッグを生成
         const baseSlug = filename
             .replace(/\.md$/, '')
@@ -445,8 +444,8 @@ draft: false
             .replace(/\s+/g, '-') // スペースをハイフンに
             .replace(/-+/g, '-') // 連続ハイフンを1つに
             .trim();
-        
-        return `${dateStr}-${baseSlug}`;
+
+        return `${dateStr}00-${baseSlug}`;
     }
 
     async saveToDirectory(content: string, filename: string) {
