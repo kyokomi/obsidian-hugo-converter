@@ -118,7 +118,7 @@ export default class HugoConverterPlugin extends Plugin {
 
             // 日付とスラッグを生成（初回変換日を使用）
             const dateStr = firstConvertedDate.toISOString().slice(0, 10).replace(/-/g, '');
-            const slug = this.generateSlug(file.basename);
+            const slug = this.generateSlug(file.basename, firstConvertedDate);
             const filename = `${dateStr}01-${slug}.md`;
 
             // 出力先ディレクトリが設定されている場合はそこに保存
@@ -388,6 +388,13 @@ export default class HugoConverterPlugin extends Plugin {
         }
     }
 
+    formatDateToJST(date: Date): string {
+        // 日本時間に変換（UTC+9）
+        const jstDate = new Date(date.getTime() + (9 * 60 * 60 * 1000));
+        // ISO形式で出力し、末尾の'Z'を'+09:00'に置換
+        return jstDate.toISOString().replace('Z', '+09:00');
+    }
+
     convertContent(content: string, filename: string, firstConvertedDate: Date): string {
         // タグを抽出
         const tagMatches = content.match(/^#\w+(\s+#\w+)*/m);
@@ -417,8 +424,8 @@ export default class HugoConverterPlugin extends Plugin {
         // frontmatterを生成（初回変換日を使用）
         const frontmatter = `---
 title: "${title}"
-date: ${firstConvertedDate.toISOString()}
-slug: ${this.generateSlug(filename)}
+date: ${this.formatDateToJST(firstConvertedDate)}
+slug: ${this.generateSlug(filename, firstConvertedDate)}
 tags:${tags.length > 0 ? '\n' + tags.map(tag => `  - ${tag}`).join('\n') : ' []'}
 draft: false
 ---`;
@@ -426,15 +433,20 @@ draft: false
         return `${frontmatter}\n\n${cleanContent}`;
     }
 
-    generateSlug(filename: string): string {
+    generateSlug(filename: string, date: Date): string {
+        // 日付をYYYYMMDD形式でフォーマット
+        const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
+        
         // ファイル名からスラッグを生成
-        return filename
+        const baseSlug = filename
             .replace(/\.md$/, '')
             .toLowerCase()
             .replace(/[^\w\s-]/g, '') // 特殊文字を削除
             .replace(/\s+/g, '-') // スペースをハイフンに
             .replace(/-+/g, '-') // 連続ハイフンを1つに
             .trim();
+        
+        return `${dateStr}-${baseSlug}`;
     }
 
     async saveToDirectory(content: string, filename: string) {
