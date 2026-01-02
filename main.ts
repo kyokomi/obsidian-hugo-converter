@@ -418,6 +418,13 @@ export default class HugoConverterPlugin extends Plugin {
             return p1;
         });
 
+        // YouTubeのURLをHugoのshortcodeに変換
+        const youtubeRegex = /(https?:\/\/(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]+)|https?:\/\/youtu\.be\/([a-zA-Z0-9_-]+))/g;
+        cleanContent = cleanContent.replace(youtubeRegex, (match, url, videoId1, videoId2) => {
+            const videoId = videoId1 || videoId2;
+            return `{{< youtube ${videoId} >}}`;
+        });
+
         // この時点で画像はすでにGyazo URLに置換されているので、特別な処理は不要
 
         // frontmatterを生成（初回変換日を使用）
