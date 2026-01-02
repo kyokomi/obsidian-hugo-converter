@@ -395,17 +395,29 @@ export default class HugoConverterPlugin extends Plugin {
     }
 
     convertContent(content: string, filename: string, firstConvertedDate: Date): string {
-        // タグを抽出
-        const tagMatches = content.match(/^#\w+(\s+#\w+)*/m);
-        const tags = tagMatches ? tagMatches[0].split(/\s+/).map(tag => tag.substring(1)) : [];
+        const lines = content.split('\n');
+        const tagLines: string[] = [];
+        const contentLines: string[] = [];
+        let tags: string[] = [];
 
-        // タグ行を削除
-        let cleanContent = content;
-        if (tagMatches) {
-            cleanContent = content.replace(/^#\w+(\s+#\w+)*\s*\n*/m, '');
-        }
+        // タグ行を判定し、タグを抽出
+        lines.forEach(line => {
+            const trimmedLine = line.trim();
+            const tagRegex = /^#[^\s#]+(?: #[^\s#]+)*$/;
+            if (tagRegex.test(trimmedLine)) {
+                tagLines.push(line);
+                const lineTags = trimmedLine.split(/\s+/).filter(Boolean).map(tag => tag.substring(1));
+                tags = tags.concat(lineTags);
+            } else {
+                contentLines.push(line);
+            }
+        });
+
+        // タグの重複を削除
+        tags = [...new Set(tags)];
 
         // first_convertedを含むfrontmatterを削除
+        let cleanContent = contentLines.join('\n');
         cleanContent = cleanContent.replace(/^---\n[\s\S]*?\n---\n*/m, '');
 
         // タイトルを取得（最初の#見出しまたはファイル名）
