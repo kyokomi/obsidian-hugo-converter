@@ -394,11 +394,27 @@ export default class HugoConverterPlugin extends Plugin {
         return jstDate.toISOString().replace('Z', '+09:00');
     }
 
+    extractImageFromFrontmatter(content: string): string | null {
+        const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+        if (!frontmatterMatch) return null;
+
+        const frontmatter = frontmatterMatch[1];
+        const imageMatch = frontmatter.match(/image:\s*(.+)/);
+        if (imageMatch) {
+            return imageMatch[1].trim();
+        }
+
+        return null;
+    }
+
     convertContent(content: string, filename: string, firstConvertedDate: Date): string {
         const lines = content.split('\n');
         const tagLines: string[] = [];
         const contentLines: string[] = [];
         let tags: string[] = [];
+
+        // Obsidian frontmatterからimageプロパティを抽出
+        const image = this.extractImageFromFrontmatter(content);
 
         // タグ行を判定し、タグを抽出
         lines.forEach(line => {
@@ -440,11 +456,12 @@ export default class HugoConverterPlugin extends Plugin {
         // この時点で画像はすでにGyazo URLに置換されているので、特別な処理は不要
 
         // frontmatterを生成（初回変換日を使用）
+        const imageLine = image ? `\nimage: ${image}` : '';
         const frontmatter = `---
 title: "${title}"
 date: ${this.formatDateToJST(firstConvertedDate)}
 slug: ${this.generateSlug(filename, firstConvertedDate)}
-tags:${tags.length > 0 ? '\n' + tags.map(tag => `  - ${tag}`).join('\n') : ' []'}
+tags:${tags.length > 0 ? '\n' + tags.map(tag => `  - ${tag}`).join('\n') : ' []'}${imageLine}
 draft: false
 ---`;
 
