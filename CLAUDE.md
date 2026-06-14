@@ -38,7 +38,7 @@ ObsidianのノートをHugoブログ形式に変換するプラグイン。
 ## 技術仕様
 
 ### 画像の扱い
-- 画像はHugoサイトの `static/images/<slug>/` にコピーする（旧: Gyazoアップロード）
+- 画像はHugoサイトの `static/images/<slug>/` にコピーする
 - Hugoルートは出力先から `config.toml` を上方向探索して自動検出
 - 参照は `/images/<slug>/<file>` の絶対パス。アイキャッチは本文の最初の画像
 - 外部API依存なし
