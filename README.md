@@ -6,10 +6,10 @@ A plugin that converts Obsidian notes to Hugo blog format.
 
 - 📝 Convert Obsidian markdown articles to Hugo format
 - 🏷️ Automatic tag conversion (`#tagname` → YAML frontmatter)
-- 🖼️ Automatic image upload to Gyazo
+- 🖼️ Copy images into the Hugo site's `static/images/<slug>/` (no external service)
 - 🔗 Internal link conversion
-- 📅 Automatic frontmatter generation
-- 💾 Automatic image URL update in source article
+- 📅 Automatic frontmatter generation (featured image = first image in the body)
+- 🛡️ Leaves the source Obsidian note untouched
 
 ## Installation
 
@@ -27,11 +27,9 @@ This plugin will be submitted to the Community Plugins repository.
 ## Configuration
 
 1. Go to Obsidian Settings → Community plugins → Hugo Converter → Settings
-2. Get and enter your Gyazo access token:
-   - Visit https://gyazo.com/oauth/applications
-   - Click "Register new application"
-   - Enter an application name and register
-   - Copy the generated access token and paste it into the settings
+2. Set **Output Directory** to your Hugo site's posts directory (e.g. `/path/to/blog/content/post`).
+   - Images are saved to `static/images/<slug>/` under the same Hugo site (the Hugo root is auto-detected by locating `config.toml`).
+   - If left empty, the converted file is downloaded instead (images cannot be copied in this mode).
 
 ## Usage
 
@@ -40,8 +38,8 @@ This plugin will be submitted to the Community Plugins repository.
    - Right-click in file explorer → "Convert to Hugo blog"
    - Command palette (Cmd/Ctrl+P) → "Convert to Hugo blog"
 
-2. Images will be automatically uploaded to Gyazo
-3. The converted file will be downloaded in `YYYYMMDD01-slug.md` format
+2. Images are copied into `static/images/<slug>/` and referenced as `/images/<slug>/...` (the source note is not modified)
+3. The converted file is saved to the Output Directory (or downloaded) in `YYYYMMDD00-slug.md` format
 
 ## Conversion Features
 
@@ -62,12 +60,15 @@ tags:
 ```
 
 ### Image Conversion
+
+The image file is copied to `static/images/<slug>/` and the reference is rewritten to a local absolute path. The first image in the body is also used as the `image:` (featured image) in the frontmatter.
+
 ```markdown
 ![[Pasted image 20220529164221.png]]
 ```
 ↓
 ```markdown
-![Pasted image 20220529164221](https://gyazo.com/xxx.png)
+![](/images/<slug>/pasted-image-20220529164221.png)
 ```
 
 ### Internal Link Conversion

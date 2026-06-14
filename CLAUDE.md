@@ -7,9 +7,10 @@ ObsidianのノートをHugoブログ形式に変換するプラグイン。
 ### 主な機能
 - Obsidianマークダウン → Hugo形式変換
 - タグの自動変換（`#タグ名` → YAML frontmatter）
-- 画像の自動Gyazoアップロード
+- 画像をHugoサイトの `static/images/<slug>/` にコピー（外部サービス不要）
 - 内部リンクの変換
-- 元記事の画像URL自動更新
+- アイキャッチ（`image:`）に本文の最初の画像を自動採用
+- 元のObsidianノートは書き換えない
 
 ## コーディング規約
 - .editorconfig準拠
@@ -36,8 +37,11 @@ ObsidianのノートをHugoブログ形式に変換するプラグイン。
 
 ## 技術仕様
 
-### 外部API
-- Gyazo Upload API
+### 画像の扱い
+- 画像はHugoサイトの `static/images/<slug>/` にコピーする（旧: Gyazoアップロード）
+- Hugoルートは出力先から `config.toml` を上方向探索して自動検出
+- 参照は `/images/<slug>/<file>` の絶対パス。アイキャッチは本文の最初の画像
+- 外部API依存なし
 
 ## ファイル構成
 
@@ -61,8 +65,8 @@ hugo-converter/
 
 ## 注意事項
 
-- 画像アップロード前に必ずGyazoアクセストークンの設定確認
+- Output Directory（Hugoの content/post）を設定すること。未設定時はダウンロードにフォールバック
 - エラーハンドリングでユーザー体験を重視
-- 元ファイルの更新は慎重に（バックアップ推奨通知）
-- 大量画像の一括アップロード時のレート制限に注意
+- 元のObsidianノートは書き換えない（画像参照はそのまま。再変換でもslugは固定）
+- 再変換時は `static/images/<slug>/` をクリーンビルド（`.../static/images/<slug>` 以外を消さない安全ガードあり）
 
