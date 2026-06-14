@@ -1,21 +1,18 @@
-import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, requestUrl, FileSystemAdapter } from 'obsidian';
+import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, FileSystemAdapter } from 'obsidian';
 
 interface HugoConverterSettings {
-    gyazoAccessToken: string;
     outputDirectory: string;
 }
 
 const DEFAULT_SETTINGS: HugoConverterSettings = {
-    gyazoAccessToken: '',
     outputDirectory: ''
 }
 
-interface UploadedImages {
-    [key: string]: string;
-}
-
-interface GyazoResponse {
-    url: string;
+// 本文中の画像参照1件を表す
+interface ImageRef {
+    marker: string;   // 本文中の元の文字列全体（置換対象）。例: "![[a.png]]" / "![alt](images/a.png)"
+    tfile: TFile;     // vault内の実ファイル
+    outName: string;  // static配下/参照URLで使うサニタイズ後ファイル名
 }
 
 export default class HugoConverterPlugin extends Plugin {
@@ -87,37 +84,32 @@ export default class HugoConverterPlugin extends Plugin {
         }
 
         try {
-            // ファイル内容を読み込み
+            // ファイル内容を読み込み（元ノートは書き換えない）
             const content = await this.app.vault.read(file);
 
-            // 既存のfrontmatterから初回変換日を取得
-            const existingFirstConverted = this.extractFirstConvertedDate(content);
-            const firstConvertedDate = existingFirstConverted || new Date();
+            // slug用の日付を決定（元ノートには書き込まない）
+            const slugDate = this.resolveSlugDate(file, content);
+            const slug = this.generateSlug(file.basename, slugDate);
+
+            // 本文中の画像参照を出現順に収集
+            const refs = this.collectImageRefs(content);
 
             new Notice('Converting to Hugo format...');
 
-            // 画像をGyazoにアップロード（完全に終わるまで待つ）
-            const uploadedImages = await this.uploadImagesInContent(content);
-
-            // アップロードが完了したら元の記事を更新
-            let updatedContent = content;
-            if (Object.keys(uploadedImages).length > 0) {
-                await this.updateOriginalFile(file, uploadedImages);
-
-                // 更新が完了してから再読み込み
-                updatedContent = await this.app.vault.read(file);
+            // 画像を static/images/<slug>/ にコピー（クリーンビルド）
+            if (this.settings.outputDirectory) {
+                if (refs.length > 0) {
+                    await this.copyImagesToStatic(refs, slug);
+                }
+            } else if (refs.length > 0) {
+                new Notice('Output Directory が未設定のため画像をローカル配置できません');
             }
 
-            // 初回変換日をfrontmatterに追加（まだない場合）
-            if (!existingFirstConverted) {
-                updatedContent = await this.addFirstConvertedToFrontmatter(file, updatedContent, firstConvertedDate);
-            }
+            // アイキャッチは本文の最初の画像
+            const featured = this.pickFeaturedImage(refs, slug);
 
-            // すべての更新が完了してから変換処理を開始
-            const converted = await this.convertContent(updatedContent, file.basename, firstConvertedDate);
-
-            // 日付とスラッグを生成（初回変換日を使用）
-            const slug = this.generateSlug(file.basename, firstConvertedDate);
+            // Hugo記事本文を生成
+            const converted = this.convertContent(content, file.basename, slugDate, refs, slug, featured);
             const filename = `${slug}.md`;
 
             // 出力先ディレクトリが設定されている場合はそこに保存
@@ -140,6 +132,20 @@ export default class HugoConverterPlugin extends Plugin {
         }
     }
 
+    // slug生成に使う日付を決める。優先順位（いずれも元ノートには書き込まない）:
+    //   1. 元ノートに既存の first_converted があれば流用（後方互換）
+    //   2. 出力先に既存の同名slug記事があればその日付を再利用（再変換でslug固定）
+    //   3. どちらも無ければ現在日時（新規記事の初回変換）
+    resolveSlugDate(file: TFile, content: string): Date {
+        const existing = this.extractFirstConvertedDate(content);
+        if (existing) return existing;
+
+        const fromOutput = this.findExistingSlugDate(file.basename);
+        if (fromOutput) return fromOutput;
+
+        return new Date();
+    }
+
     extractFirstConvertedDate(content: string): Date | null {
         // frontmatterを解析
         const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
@@ -157,80 +163,246 @@ export default class HugoConverterPlugin extends Plugin {
         return null;
     }
 
-    async addFirstConvertedToFrontmatter(file: TFile, content: string, date: Date): Promise<string> {
-        const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    // 出力先に既に存在する同名slug記事のファイル名から日付(YYYYMMDD)を復元する。
+    // toISOStringでの日付ズレを避けるため、ファイル名の8桁をそのままUTC基準のDateに変換する。
+    findExistingSlugDate(filename: string): Date | null {
+        const outputDir = this.settings.outputDirectory;
+        if (!outputDir) return null;
 
-        if (frontmatterMatch) {
-            // 既存のfrontmatterに追加
-            const frontmatter = frontmatterMatch[1];
-            const newFrontmatter = `---\n${frontmatter}\nfirst_converted: ${date.toISOString()}\n---`;
-            const newContent = content.replace(/^---\n[\s\S]*?\n---/, newFrontmatter);
-            await this.app.vault.modify(file, newContent);
-            return newContent;
-        } else {
-            // frontmatterがない場合は新規作成
-            const newContent = `---\nfirst_converted: ${date.toISOString()}\n---\n\n${content}`;
-            await this.app.vault.modify(file, newContent);
-            return newContent;
+        const adapter = this.app.vault.adapter;
+        if (!(adapter instanceof FileSystemAdapter)) return null;
+
+        // @ts-ignore: require is available in Obsidian environment
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const fs = require('fs');
+        // @ts-ignore: require is available in Obsidian environment
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const nodePath = require('path');
+
+        const absDir = nodePath.isAbsolute(outputDir)
+            ? outputDir
+            : nodePath.join(adapter.getBasePath(), outputDir);
+
+        if (!fs.existsSync(absDir)) return null;
+
+        const baseSlug = this.slugifyBasename(filename);
+        const escaped = baseSlug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const re = new RegExp(`^(\\d{8})00-${escaped}\\.md$`);
+
+        for (const f of fs.readdirSync(absDir)) {
+            const m = f.match(re);
+            if (m) {
+                const s = m[1];
+                const date = new Date(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T00:00:00Z`);
+                if (!isNaN(date.getTime())) return date;
+            }
+        }
+
+        return null;
+    }
+
+    // 本文中の画像参照(Obsidian形式 ![[name]] / 標準形式 ![alt](path))を出現順に収集する。
+    // 外部URL(http(s))はスキップ。vault内で解決できないものもスキップ。
+    collectImageRefs(content: string): ImageRef[] {
+        const combined = /!\[\[([^\]]+)\]\]|!\[([^\]]*)\]\(([^)]+)\)/g;
+        const refs: ImageRef[] = [];
+        const byPath = new Map<string, string>(); // tfile.path -> outName（同一画像は同じ名前）
+        const usedNames = new Set<string>();
+
+        let m: RegExpExecArray | null;
+        while ((m = combined.exec(content)) !== null) {
+            const marker = m[0];
+            let tfile: TFile | null = null;
+
+            if (m[1] !== undefined) {
+                // Obsidian形式 ![[name]]
+                const imageName = m[1];
+                const possiblePaths = [`images/${imageName}`, imageName];
+                for (const p of possiblePaths) {
+                    const f = this.app.vault.getAbstractFileByPath(p);
+                    if (f instanceof TFile) {
+                        tfile = f;
+                        break;
+                    }
+                }
+            } else {
+                // 標準Markdown形式 ![alt](path)
+                const imagePath = m[3];
+                if (/^https?:\/\//.test(imagePath)) continue; // 外部URLは対象外
+                const normalized = imagePath.startsWith('/') ? imagePath.substring(1) : imagePath;
+                const f = this.app.vault.getAbstractFileByPath(decodeURIComponent(normalized));
+                if (f instanceof TFile) tfile = f;
+            }
+
+            if (!tfile) {
+                console.warn('画像ファイルが見つかりません:', marker);
+                continue;
+            }
+
+            // 同一画像は同じファイル名を使い回す。別画像で名前が衝突したら連番を付ける。
+            let outName = byPath.get(tfile.path);
+            if (!outName) {
+                outName = this.sanitizeImageName(tfile.name);
+                if (usedNames.has(outName)) {
+                    const dot = outName.lastIndexOf('.');
+                    const base = dot >= 0 ? outName.slice(0, dot) : outName;
+                    const ext = dot >= 0 ? outName.slice(dot) : '';
+                    let i = 2;
+                    while (usedNames.has(`${base}-${i}${ext}`)) i++;
+                    outName = `${base}-${i}${ext}`;
+                }
+                usedNames.add(outName);
+                byPath.set(tfile.path, outName);
+            }
+
+            refs.push({ marker, tfile, outName });
+        }
+
+        return refs;
+    }
+
+    // 画像ファイル名をASCII安全な名前に変換する（日本語・スペース・記号対策）。
+    sanitizeImageName(name: string): string {
+        const dot = name.lastIndexOf('.');
+        const ext = dot >= 0 ? name.slice(dot + 1).toLowerCase().replace(/[^\w]/g, '') : '';
+        let base = dot >= 0 ? name.slice(0, dot) : name;
+
+        base = base
+            .normalize('NFKD')
+            .replace(/\s+/g, '-')      // 空白 → ハイフン
+            .replace(/[^\w-]/g, '')    // 英数・アンダースコア・ハイフン以外を除去（日本語も除去）
+            .replace(/-+/g, '-')       // 連続ハイフンを1つに
+            .replace(/_+/g, '_')       // 連続アンダースコアを1つに
+            .replace(/^[-_]+|[-_]+$/g, '') // 先頭・末尾の区切りを除去
+            .toLowerCase();
+
+        if (!base) base = 'image'; // 日本語のみのファイル名などで空になった場合
+
+        return ext ? `${base}.${ext}` : base;
+    }
+
+    // Hugoルートを config.toml / hugo.toml の存在で上方向探索する。
+    resolveHugoRoot(absoluteOutputDir: string): string {
+        // @ts-ignore: require is available in Obsidian environment
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const fs = require('fs');
+        // @ts-ignore: require is available in Obsidian environment
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const nodePath = require('path');
+
+        let dir = absoluteOutputDir;
+        for (let i = 0; i < 10; i++) {
+            if (fs.existsSync(nodePath.join(dir, 'config.toml')) ||
+                fs.existsSync(nodePath.join(dir, 'hugo.toml'))) {
+                return dir;
+            }
+            const parent = nodePath.dirname(dir);
+            if (parent === dir) break;
+            dir = parent;
+        }
+
+        // フォールバック: content/post から見て ../../ がHugoルートとみなす
+        return nodePath.resolve(absoluteOutputDir, '..', '..');
+    }
+
+    // static/images/<slug>/ の絶対パスを求める。
+    resolveStaticImagesDir(slug: string): string {
+        const adapter = this.app.vault.adapter;
+        if (!(adapter instanceof FileSystemAdapter)) {
+            throw new Error('FileSystemAdapter is not available');
+        }
+
+        // @ts-ignore: require is available in Obsidian environment
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const nodePath = require('path');
+
+        const outputDir = this.settings.outputDirectory;
+        const absOut = nodePath.isAbsolute(outputDir)
+            ? outputDir
+            : nodePath.join(adapter.getBasePath(), outputDir);
+
+        const hugoRoot = this.resolveHugoRoot(absOut);
+        return nodePath.join(hugoRoot, 'static', 'images', slug);
+    }
+
+    // クリーンビルド前の安全ガード。.../static/images/<非空slug> 以外を消さない。
+    assertSafeImageDir(target: string, slug: string): void {
+        // @ts-ignore: require is available in Obsidian environment
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const nodePath = require('path');
+
+        if (!slug || slug.includes('/') || slug.includes('\\') || slug.includes('..')) {
+            throw new Error(`不正なslugです: "${slug}"`);
+        }
+
+        const parts = target.split(nodePath.sep).filter(Boolean);
+        const last = parts[parts.length - 1];
+        const parent = parts[parts.length - 2];
+        const grand = parts[parts.length - 3];
+
+        if (last !== slug || parent !== 'images' || grand !== 'static') {
+            throw new Error(`想定外の画像ディレクトリのため処理を中断しました: ${target}`);
         }
     }
 
-    async uploadImageToGyazo(imageFile: TFile): Promise<string | null> {
-        try {
-            // ファイルを読み込み
-            const arrayBuffer = await this.app.vault.readBinary(imageFile);
+    // アイキャッチ(image:)。本文の最初の画像を採用する。
+    pickFeaturedImage(refs: ImageRef[], slug: string): string | null {
+        if (refs.length === 0) return null;
+        return `/images/${slug}/${encodeURIComponent(refs[0].outName)}`;
+    }
 
-            // multipart/form-dataを手動で作成
-            const boundary = '----FormBoundary' + Math.random().toString(36).substring(2);
-            const encoder = new TextEncoder();
+    // 画像を static/images/<slug>/ にコピー。再変換時はフォルダを一旦空にしてからコピーする。
+    async copyImagesToStatic(refs: ImageRef[], slug: string): Promise<void> {
+        const target = this.resolveStaticImagesDir(slug);
+        this.assertSafeImageDir(target, slug);
 
-            // 各パートを作成
-            const parts: ArrayBuffer[] = [];
+        // @ts-ignore: require is available in Obsidian environment
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const fs = require('fs');
+        // @ts-ignore: require is available in Obsidian environment
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const nodePath = require('path');
 
-            // access_tokenパート
-            const tokenPart = `------${boundary}\r\nContent-Disposition: form-data; name="access_token"\r\n\r\n${this.settings.gyazoAccessToken}\r\n`;
-            parts.push(encoder.encode(tokenPart).buffer);
-
-            // imagedataパート
-            const imageHeader = `------${boundary}\r\nContent-Disposition: form-data; name="imagedata"; filename="${imageFile.name}"\r\nContent-Type: image/${imageFile.extension}\r\n\r\n`;
-            parts.push(encoder.encode(imageHeader).buffer);
-            parts.push(arrayBuffer);
-            parts.push(encoder.encode('\r\n').buffer);
-
-            // 終端
-            const footer = `------${boundary}--\r\n`;
-            parts.push(encoder.encode(footer).buffer);
-
-            // すべてのパートを結合
-            const totalLength = parts.reduce((acc, part) => acc + part.byteLength, 0);
-            const body = new Uint8Array(totalLength);
-            let offset = 0;
-            for (const part of parts) {
-                body.set(new Uint8Array(part), offset);
-                offset += part.byteLength;
-            }
-
-            const response = await requestUrl({
-                url: 'https://upload.gyazo.com/api/upload',
-                method: 'POST',
-                headers: {
-                    'Content-Type': `multipart/form-data; boundary=----${boundary}`
-                },
-                body: body.buffer
-            });
-
-            if (response.status === 200) {
-                const data = response.json as GyazoResponse;
-                // 画像アップロード完了（通知削除）
-                return data.url;
-            } else {
-                console.error('Gyazoアップロードエラー:', response.status);
-                return null;
-            }
-        } catch (error) {
-            console.error('画像処理エラー:', error);
-            return null;
+        // クリーンビルド: 既存フォルダを削除して作り直す（ゴミ画像を残さない）
+        if (fs.existsSync(target)) {
+            fs.rmSync(target, { recursive: true, force: true });
         }
+        fs.mkdirSync(target, { recursive: true });
+
+        // 同一画像は1回だけコピーする
+        const copied = new Set<string>();
+        const uniqueRefs = refs.filter(ref => {
+            if (copied.has(ref.outName)) return false;
+            copied.add(ref.outName);
+            return true;
+        });
+
+        let current = 0;
+        this.updateStatusBarProgress(current, uniqueRefs.length, 'Copying images');
+
+        for (const ref of uniqueRefs) {
+            try {
+                const arrayBuffer = await this.app.vault.readBinary(ref.tfile);
+                fs.writeFileSync(nodePath.join(target, ref.outName), Buffer.from(arrayBuffer));
+            } catch (error) {
+                console.error('画像コピーエラー:', ref.outName, error);
+            }
+            current++;
+            this.updateStatusBarProgress(current, uniqueRefs.length, 'Copying images');
+        }
+
+        this.hideStatusBarProgress();
+    }
+
+    // 本文中の画像参照を /images/<slug>/<file> 形式に書き換える。
+    rewriteImagePaths(content: string, refs: ImageRef[], slug: string): string {
+        let result = content;
+        for (const ref of refs) {
+            const url = `/images/${slug}/${encodeURIComponent(ref.outName)}`;
+            // markerに正規表現特殊文字が含まれても安全なよう split/join で全置換する
+            result = result.split(ref.marker).join(`![](${url})`);
+        }
+        return result;
     }
 
     updateStatusBarProgress(current: number, total: number, message: string): void {
@@ -238,7 +410,7 @@ export default class HugoConverterPlugin extends Plugin {
             this.statusBarItem = this.addStatusBarItem();
         }
 
-        const percentage = Math.round((current / total) * 100);
+        const percentage = total > 0 ? Math.round((current / total) * 100) : 100;
         const progressBar = '█'.repeat(Math.floor(percentage / 5)) + '░'.repeat(20 - Math.floor(percentage / 5));
         const statusText = `${message} [${progressBar}] ${current}/${total}`;
 
@@ -253,140 +425,6 @@ export default class HugoConverterPlugin extends Plugin {
         }
     }
 
-    async uploadImagesInContent(content: string): Promise<UploadedImages> {
-        if (!this.settings.gyazoAccessToken) {
-            new Notice('Gyazo access token is not configured');
-            return {};
-        }
-
-        // 標準的なMarkdown画像とObsidian形式の画像の両方を検出
-        const standardImageRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
-        const obsidianImageRegex = /!\[\[([^\]]+)\]\]/g;
-
-        const standardMatches = [...content.matchAll(standardImageRegex)];
-        const obsidianMatches = [...content.matchAll(obsidianImageRegex)];
-        const uploadedImages: UploadedImages = {};
-
-        // 処理対象の画像をフィルタリング（外部URLを除外）
-        const filteredStandardMatches = standardMatches.filter(match => {
-            const imagePath = match[2];
-            return !imagePath.startsWith('http://') && !imagePath.startsWith('https://');
-        });
-
-        const totalImages = filteredStandardMatches.length + obsidianMatches.length;
-
-        if (totalImages === 0) {
-            // 画像がない場合は静かに処理を続行
-            return {};
-        }
-
-        let currentCount = 0;
-        this.updateStatusBarProgress(currentCount, totalImages, 'Uploading images');
-
-        // 標準的なMarkdown画像を処理
-        for (const match of filteredStandardMatches) {
-            const imagePath = match[2];
-
-            try {
-                // Obsidianの画像ファイルを取得
-                const normalizedPath = imagePath.startsWith('/') ? imagePath.substring(1) : imagePath;
-                const imageFile = this.app.vault.getAbstractFileByPath(normalizedPath);
-
-                if (imageFile instanceof TFile) {
-                    const uploadedUrl = await this.uploadImageToGyazo(imageFile);
-                    if (uploadedUrl) {
-                        uploadedImages[imagePath] = uploadedUrl;
-                    }
-                }
-            } catch (error) {
-                console.error('画像処理エラー:', error);
-            }
-
-            // ステータスバーを更新
-            currentCount++;
-            this.updateStatusBarProgress(currentCount, totalImages, 'Uploading images');
-        }
-
-        // Obsidian形式の画像を処理
-        for (const match of obsidianMatches) {
-            const imageName = match[1];
-
-            try {
-                // 画像ファイルを検索（imagesフォルダや添付ファイルフォルダを確認）
-                const possiblePaths = [
-                    `images/${imageName}`,
-                    imageName,
-                    `${imageName}`
-                ];
-
-                let imageFile: TFile | null = null;
-                for (const path of possiblePaths) {
-                    const file = this.app.vault.getAbstractFileByPath(path);
-                    if (file instanceof TFile) {
-                        imageFile = file;
-                        break;
-                    }
-                }
-
-                if (imageFile) {
-                    const uploadedUrl = await this.uploadImageToGyazo(imageFile);
-                    if (uploadedUrl) {
-                        uploadedImages[`![[${imageName}]]`] = uploadedUrl;
-                    }
-                } else {
-                    console.error('画像ファイルが見つかりません:', imageName);
-                }
-            } catch (error) {
-                console.error('画像処理エラー:', error);
-            }
-
-            // ステータスバーを更新
-            currentCount++;
-            this.updateStatusBarProgress(currentCount, totalImages, 'Uploading images');
-        }
-
-        // 完了処理
-        this.hideStatusBarProgress();
-        // 画像アップロード完了（通知削除）
-
-        return uploadedImages;
-    }
-
-    async updateOriginalFile(file: TFile, uploadedImages: UploadedImages) {
-        try {
-            let content = await this.app.vault.read(file);
-            let updated = false;
-
-            // Obsidian形式の画像を置換
-            for (const [oldPath, newUrl] of Object.entries(uploadedImages)) {
-                if (oldPath.startsWith('![[')) {
-                    // Obsidian形式の画像
-                    const newContent = content.replace(oldPath, `![image](${newUrl})`);
-                    if (newContent !== content) {
-                        content = newContent;
-                        updated = true;
-                    }
-                } else {
-                    // 標準Markdown形式の画像
-                    const regex = new RegExp(`!\\[([^\\]]*)\\]\\(${oldPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`, 'g');
-                    const newContent = content.replace(regex, `![$1](${newUrl})`);
-                    if (newContent !== content) {
-                        content = newContent;
-                        updated = true;
-                    }
-                }
-            }
-
-            if (updated) {
-                await this.app.vault.modify(file, content);
-                // 画像URL更新完了（通知削除）
-            }
-        } catch (error) {
-            console.error('元ファイルの更新エラー:', error);
-            new Notice('Failed to update original file');
-        }
-    }
-
     formatDateToJST(date: Date): string {
         // 日本時間に変換（UTC+9）
         const jstDate = new Date(date.getTime() + (9 * 60 * 60 * 1000));
@@ -394,7 +432,8 @@ export default class HugoConverterPlugin extends Plugin {
         return jstDate.toISOString().replace('Z', '+09:00');
     }
 
-    convertContent(content: string, filename: string, firstConvertedDate: Date): string {
+    convertContent(content: string, filename: string, slugDate: Date,
+                   refs: ImageRef[] = [], slug?: string, featured: string | null = null): string {
         const lines = content.split('\n');
         const tagLines: string[] = [];
         const contentLines: string[] = [];
@@ -416,13 +455,18 @@ export default class HugoConverterPlugin extends Plugin {
         // タグの重複を削除
         tags = [...new Set(tags)];
 
-        // first_convertedを含むfrontmatterを削除
+        // frontmatterを削除
         let cleanContent = contentLines.join('\n');
         cleanContent = cleanContent.replace(/^---\n[\s\S]*?\n---\n*/m, '');
 
         // タイトルを取得（最初の#見出しまたはファイル名）
         const titleMatch = cleanContent.match(/^#\s+(.+)$/m);
         const title = titleMatch ? titleMatch[1] : filename.replace(/\.md$/, '');
+
+        // 画像参照をローカルパスに変換（内部リンク変換より前に行う）
+        if (slug) {
+            cleanContent = this.rewriteImagePaths(cleanContent, refs, slug);
+        }
 
         // 内部リンクを変換
         cleanContent = cleanContent.replace(/\[\[([^\]]+)\]\]/g, (match, p1) => {
@@ -437,34 +481,34 @@ export default class HugoConverterPlugin extends Plugin {
             return `{{< youtube ${videoId} >}}`;
         });
 
-        // この時点で画像はすでにGyazo URLに置換されているので、特別な処理は不要
-
-        // frontmatterを生成（初回変換日を使用）
+        // frontmatterを生成
+        const imageLine = featured ? `\nimage: ${featured}` : '';
         const frontmatter = `---
 title: "${title}"
-date: ${this.formatDateToJST(firstConvertedDate)}
-slug: ${this.generateSlug(filename, firstConvertedDate)}
-tags:${tags.length > 0 ? '\n' + tags.map(tag => `  - ${tag}`).join('\n') : ' []'}
+date: ${this.formatDateToJST(slugDate)}
+slug: ${this.generateSlug(filename, slugDate)}
+tags:${tags.length > 0 ? '\n' + tags.map(tag => `  - ${tag}`).join('\n') : ' []'}${imageLine}
 draft: false
 ---`;
 
         return `${frontmatter}\n\n${cleanContent}`;
     }
 
-    generateSlug(filename: string, date: Date): string {
-        // 日付をYYYYMMDD形式でフォーマット
-        const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
-
-        // ファイル名からスラッグを生成
-        const baseSlug = filename
+    // ファイル名からslug本体部分（日付を除いた部分）を生成する。
+    slugifyBasename(filename: string): string {
+        return filename
             .replace(/\.md$/, '')
             .toLowerCase()
             .replace(/[^\w\s-]/g, '') // 特殊文字を削除
-            .replace(/\s+/g, '-') // スペースをハイフンに
-            .replace(/-+/g, '-') // 連続ハイフンを1つに
+            .replace(/\s+/g, '-')     // スペースをハイフンに
+            .replace(/-+/g, '-')      // 連続ハイフンを1つに
             .trim();
+    }
 
-        return `${dateStr}00-${baseSlug}`;
+    generateSlug(filename: string, date: Date): string {
+        // 日付をYYYYMMDD形式でフォーマット
+        const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
+        return `${dateStr}00-${this.slugifyBasename(filename)}`;
     }
 
     async saveToDirectory(content: string, filename: string) {
@@ -525,36 +569,10 @@ class HugoConverterSettingTab extends PluginSettingTab {
         containerEl.createEl('h2', {text: 'Hugo Converter Settings'});
 
         new Setting(containerEl)
-            .setName('Gyazo Access Token')
-            .setDesc('Upload images in the article to Gyazo API and replace URLs.')
-            .addText(text => text
-                .setPlaceholder('Enter access token')
-                .setValue(this.plugin.settings.gyazoAccessToken)
-                .onChange(async (value) => {
-                    this.plugin.settings.gyazoAccessToken = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        containerEl.createEl('p', {
-            text: 'How to get Gyazo access token:',
-            cls: 'setting-item-description'
-        });
-
-        const ol = containerEl.createEl('ol', {
-            cls: 'setting-item-description'
-        });
-        ol.createEl('li', {text: 'Visit https://gyazo.com/oauth/applications'});
-        ol.createEl('li', {text: 'Click "Register new application"'});
-        ol.createEl('li', {text: 'Enter application name and register'});
-        ol.createEl('li', {text: 'Copy the generated access token'});
-
-        containerEl.createEl('br');
-
-        new Setting(containerEl)
             .setName('Output Directory')
-            .setDesc('Specify the directory to save converted files. If empty, files will be downloaded.')
+            .setDesc('変換後の記事を保存するディレクトリ(例: Hugoの content/post)。画像は同じHugoサイトの static/images/<slug>/ に保存されます。空の場合はダウンロードされます。')
             .addText(text => text
-                .setPlaceholder('Example: /Users/username/Documents/hugo-blog')
+                .setPlaceholder('Example: /Users/username/blog/content/post')
                 .setValue(this.plugin.settings.outputDirectory)
                 .onChange(async (value) => {
                     this.plugin.settings.outputDirectory = value;
