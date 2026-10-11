@@ -1,4 +1,5 @@
 import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, FileSystemAdapter } from 'obsidian';
+import { posix as vaultPath } from 'path';
 
 interface HugoConverterSettings {
     outputDirectory: string;
@@ -10,9 +11,12 @@ const DEFAULT_SETTINGS: HugoConverterSettings = {
 
 // 本文中の画像参照1件を表す
 interface ImageRef {
-    marker: string;   // 本文中の元の文字列全体（置換対象）。例: "![[a.png]]" / "![alt](images/a.png)"
+    marker: string;   // 本文中の元の文字列全体（置換対象）。例: "![[a.png|480]]" / "![alt](images/a.png)"
     tfile: TFile;     // vault内の実ファイル
     outName: string;  // static配下/参照URLで使うサニタイズ後ファイル名
+    alt?: string;     // 代替テキスト（![[a.png|説明]] や ![説明](a.png) の説明部分）
+    width?: number;   // 表示幅（![[a.png|480]] / ![[a.png|480x300]] の指定）
+    height?: number;  // 表示高さ（![[a.png|480x300]] の指定）
 }
 
 export default class HugoConverterPlugin extends Plugin {
@@ -85,14 +89,15 @@ export default class HugoConverterPlugin extends Plugin {
 
         try {
             // ファイル内容を読み込み（元ノートは書き換えない）
-            const content = await this.app.vault.read(file);
+            const content = this.stripObsidianComments(await this.app.vault.read(file));
 
             // slug用の日付を決定（元ノートには書き込まない）
-            const slugDate = this.resolveSlugDate(file, content);
-            const slug = this.generateSlug(file.basename, slugDate);
+            const baseSlug = this.resolveBaseSlug(file.basename, content);
+            const slugDate = this.resolveSlugDate(baseSlug, content);
+            const slug = this.generateSlug(baseSlug, slugDate);
 
             // 本文中の画像参照を出現順に収集
-            const refs = this.collectImageRefs(content);
+            const refs = this.collectImageRefs(content, file.path);
 
             new Notice('Converting to Hugo format...');
 
@@ -136,11 +141,11 @@ export default class HugoConverterPlugin extends Plugin {
     //   1. 元ノートに既存の first_converted があれば流用（後方互換）
     //   2. 出力先に既存の同名slug記事があればその日付を再利用（再変換でslug固定）
     //   3. どちらも無ければ現在日時（新規記事の初回変換）
-    resolveSlugDate(file: TFile, content: string): Date {
+    resolveSlugDate(baseSlug: string, content: string): Date {
         const existing = this.extractFirstConvertedDate(content);
         if (existing) return existing;
 
-        const fromOutput = this.findExistingSlugDate(file.basename);
+        const fromOutput = this.findExistingSlugDate(baseSlug);
         if (fromOutput) return fromOutput;
 
         return new Date();
@@ -165,7 +170,7 @@ export default class HugoConverterPlugin extends Plugin {
 
     // 出力先に既に存在する同名slug記事のファイル名から日付(YYYYMMDD)を復元する。
     // toISOStringでの日付ズレを避けるため、ファイル名の8桁をそのままUTC基準のDateに変換する。
-    findExistingSlugDate(filename: string): Date | null {
+    findExistingSlugDate(baseSlug: string): Date | null {
         const outputDir = this.settings.outputDirectory;
         if (!outputDir) return null;
 
@@ -185,7 +190,6 @@ export default class HugoConverterPlugin extends Plugin {
 
         if (!fs.existsSync(absDir)) return null;
 
-        const baseSlug = this.slugifyBasename(filename);
         const escaped = baseSlug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const re = new RegExp(`^(\\d{8})00-${escaped}\\.md$`);
 
@@ -201,9 +205,65 @@ export default class HugoConverterPlugin extends Plugin {
         return null;
     }
 
-    // 本文中の画像参照(Obsidian形式 ![[name]] / 標準形式 ![alt](path))を出現順に収集する。
+    // Obsidian形式 ![[link|opt1|opt2]] の中身を分解する。
+    //   link: ファイル名（#見出し や ^ブロック参照は除去）
+    //   数字のみ / 数字x数字 のオプションはサイズ、それ以外は代替テキストとして扱う。
+    parseWikiImageLink(inner: string): { link: string; alt?: string; width?: number; height?: number } {
+        const parts = inner.split('|');
+        const link = parts[0].split(/[#^]/)[0].trim();
+        const out: { link: string; alt?: string; width?: number; height?: number } = { link };
+        for (const raw of parts.slice(1)) {
+            const opt = raw.trim();
+            if (!opt) continue;
+            const size = opt.match(/^(\d+)(?:x(\d+))?$/i);
+            if (size) {
+                out.width = parseInt(size[1], 10);
+                if (size[2]) out.height = parseInt(size[2], 10);
+            } else if (out.alt === undefined) {
+                out.alt = opt;
+            }
+        }
+        return out;
+    }
+
+    // wikilinkのファイル名をvault内のTFileに解決する。
+    // Obsidian標準の解決（metadataCache）を優先し、無ければ images/ 直下と直指定を試す。
+    resolveWikiImageFile(link: string, sourcePath: string): TFile | null {
+        const cache = this.app.metadataCache;
+        if (cache && typeof cache.getFirstLinkpathDest === 'function') {
+            const f = cache.getFirstLinkpathDest(link, sourcePath);
+            if (f instanceof TFile) return f;
+        }
+        for (const p of [`images/${link}`, link]) {
+            const f = this.app.vault.getAbstractFileByPath(p);
+            if (f instanceof TFile) return f;
+        }
+        return null;
+    }
+
+    // Markdownの相対パスは記事のディレクトリ基準。従来のVault基準の指定も維持する。
+    resolveMarkdownImageFile(link: string, sourcePath: string): TFile | null {
+        // VaultのパスはOSによらず / 区切り。
+        const decoded = decodeURIComponent(link);
+        const rooted = decoded.startsWith('/');
+        const explicitRelative = /^\.\.?\//.test(decoded);
+        const candidates = rooted
+            ? [vaultPath.normalize(decoded.slice(1))]
+            : [vaultPath.join(vaultPath.dirname(sourcePath), decoded)];
+        if (!rooted && !explicitRelative) candidates.push(vaultPath.normalize(decoded));
+
+        for (const candidate of candidates) {
+            if (candidate === '..' || candidate.startsWith('../') || vaultPath.isAbsolute(candidate)) continue;
+            const file = this.app.vault.getAbstractFileByPath(candidate);
+            if (file instanceof TFile) return file;
+        }
+        return null;
+    }
+
+    // 本文中の画像参照(Obsidian形式 ![[name|480]] / 標準形式 ![alt](path))を出現順に収集する。
     // 外部URL(http(s))はスキップ。vault内で解決できないものもスキップ。
-    collectImageRefs(content: string): ImageRef[] {
+    collectImageRefs(content: string, sourcePath = ''): ImageRef[] {
+        content = this.stripObsidianComments(content);
         const combined = /!\[\[([^\]]+)\]\]|!\[([^\]]*)\]\(([^)]+)\)/g;
         const refs: ImageRef[] = [];
         const byPath = new Map<string, string>(); // tfile.path -> outName（同一画像は同じ名前）
@@ -213,25 +273,23 @@ export default class HugoConverterPlugin extends Plugin {
         while ((m = combined.exec(content)) !== null) {
             const marker = m[0];
             let tfile: TFile | null = null;
+            let alt: string | undefined;
+            let width: number | undefined;
+            let height: number | undefined;
 
             if (m[1] !== undefined) {
-                // Obsidian形式 ![[name]]
-                const imageName = m[1];
-                const possiblePaths = [`images/${imageName}`, imageName];
-                for (const p of possiblePaths) {
-                    const f = this.app.vault.getAbstractFileByPath(p);
-                    if (f instanceof TFile) {
-                        tfile = f;
-                        break;
-                    }
-                }
+                // Obsidian形式 ![[name|480]] / ![[name|alt]] / ![[name|480x300]]
+                const parsed = this.parseWikiImageLink(m[1]);
+                tfile = this.resolveWikiImageFile(parsed.link, sourcePath);
+                alt = parsed.alt;
+                width = parsed.width;
+                height = parsed.height;
             } else {
                 // 標準Markdown形式 ![alt](path)
                 const imagePath = m[3];
                 if (/^https?:\/\//.test(imagePath)) continue; // 外部URLは対象外
-                const normalized = imagePath.startsWith('/') ? imagePath.substring(1) : imagePath;
-                const f = this.app.vault.getAbstractFileByPath(decodeURIComponent(normalized));
-                if (f instanceof TFile) tfile = f;
+                tfile = this.resolveMarkdownImageFile(imagePath, sourcePath);
+                alt = m[2] || undefined;
             }
 
             if (!tfile) {
@@ -255,7 +313,7 @@ export default class HugoConverterPlugin extends Plugin {
                 byPath.set(tfile.path, outName);
             }
 
-            refs.push({ marker, tfile, outName });
+            refs.push({ marker, tfile, outName, alt, width, height });
         }
 
         return refs;
@@ -395,12 +453,18 @@ export default class HugoConverterPlugin extends Plugin {
     }
 
     // 本文中の画像参照を /images/<slug>/<file> 形式に書き換える。
+    // サイズ指定は ?width=W&height=H のクエリで付与する（Hugo側の render-image hook が解釈する）。
     rewriteImagePaths(content: string, refs: ImageRef[], slug: string): string {
         let result = content;
         for (const ref of refs) {
-            const url = `/images/${slug}/${encodeURIComponent(ref.outName)}`;
+            let url = `/images/${slug}/${encodeURIComponent(ref.outName)}`;
+            const query: string[] = [];
+            if (ref.width) query.push(`width=${ref.width}`);
+            if (ref.height) query.push(`height=${ref.height}`);
+            if (query.length > 0) url += `?${query.join('&')}`;
+            const alt = (ref.alt ?? '').replace(/[[\]]/g, '');
             // markerに正規表現特殊文字が含まれても安全なよう split/join で全置換する
-            result = result.split(ref.marker).join(`![](${url})`);
+            result = result.split(ref.marker).join(`![${alt}](${url})`);
         }
         return result;
     }
@@ -432,8 +496,16 @@ export default class HugoConverterPlugin extends Plugin {
         return jstDate.toISOString().replace('Z', '+09:00');
     }
 
+    // コード内の %% は保持し、通常本文のコメントはメタデータ抽出より前に除去する。
+    // 閉じ忘れたコメントも末尾まで除去して執筆メモの露出を防ぐ。
+    stripObsidianComments(content: string): string {
+        const commentsOrCode = /(^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?^ {0,3}\2[ \t]*(?=\r?$)|(`+)[\s\S]*?\3)|%%[\s\S]*?(?:%%|(?![\s\S]))/gm;
+        return content.replace(commentsOrCode, (match, code) => code === undefined ? '' : match);
+    }
+
     convertContent(content: string, filename: string, slugDate: Date,
                    refs: ImageRef[] = [], slug?: string, featured: string | null = null): string {
+        content = this.stripObsidianComments(content);
         const lines = content.split('\n');
         const tagLines: string[] = [];
         const contentLines: string[] = [];
@@ -486,7 +558,7 @@ export default class HugoConverterPlugin extends Plugin {
         const frontmatter = `---
 title: "${title}"
 date: ${this.formatDateToJST(slugDate)}
-slug: ${this.generateSlug(filename, slugDate)}
+slug: ${slug ?? this.generateSlug(this.resolveBaseSlug(filename, content), slugDate)}
 tags:${tags.length > 0 ? '\n' + tags.map(tag => `  - ${tag}`).join('\n') : ' []'}${imageLine}
 draft: false
 ---`;
@@ -494,7 +566,8 @@ draft: false
         return `${frontmatter}\n\n${cleanContent}`;
     }
 
-    // ファイル名からslug本体部分（日付を除いた部分）を生成する。
+    // 文字列をslug本体部分（日付を除いた部分）に正規化する。
+    // ASCII英数字以外（日本語など）は削除されるため、空文字になることがある。
     slugifyBasename(filename: string): string {
         return filename
             .replace(/\.md$/, '')
@@ -502,13 +575,55 @@ draft: false
             .replace(/[^\w\s-]/g, '') // 特殊文字を削除
             .replace(/\s+/g, '-')     // スペースをハイフンに
             .replace(/-+/g, '-')      // 連続ハイフンを1つに
+            .replace(/^-+|-+$/g, '')  // 先頭・末尾のハイフンを削除
             .trim();
     }
 
-    generateSlug(filename: string, date: Date): string {
+    // 元ノートのfrontmatterに slug: があればその値を返す（クォートは外す）。
+    extractFrontmatterSlug(content: string): string | null {
+        const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+        if (!frontmatterMatch) return null;
+
+        const slugMatch = frontmatterMatch[1].match(/^slug:\s*(.+)$/m);
+        if (!slugMatch) return null;
+
+        const value = slugMatch[1].trim().replace(/^["']|["']$/g, '').trim();
+        return value || null;
+    }
+
+    // slug本体部分を決める。優先順位:
+    //   1. 元ノートのfrontmatterの slug:
+    //   2. ファイル名をslug化したもの
+    //   3. 上記が空（日本語タイトルなど）なら post-<ファイル名のハッシュ8桁>
+    // いずれも決定的なので、再変換しても同じslugになる。
+    resolveBaseSlug(filename: string, content: string): string {
+        const fromFrontmatter = this.extractFrontmatterSlug(content);
+        if (fromFrontmatter) {
+            const s = this.slugifyBasename(fromFrontmatter);
+            if (s) return s;
+        }
+
+        const fromFilename = this.slugifyBasename(filename);
+        if (fromFilename) return fromFilename;
+
+        return `post-${this.shortHash(filename.replace(/\.md$/, ''))}`;
+    }
+
+    // FNV-1a 32bit の16進8桁。ファイル名から決定的な短いIDを作るために使う。
+    shortHash(input: string): string {
+        let hash = 0x811c9dc5;
+        for (let i = 0; i < input.length; i++) {
+            hash ^= input.charCodeAt(i);
+            hash = Math.imul(hash, 0x01000193) >>> 0;
+        }
+        return hash.toString(16).padStart(8, '0');
+    }
+
+    // baseSlug（slugifyBasename/resolveBaseSlug済み）と日付から最終的なslugを生成する。
+    generateSlug(baseSlug: string, date: Date): string {
         // 日付をYYYYMMDD形式でフォーマット
         const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
-        return `${dateStr}00-${this.slugifyBasename(filename)}`;
+        return `${dateStr}00-${baseSlug}`;
     }
 
     async saveToDirectory(content: string, filename: string) {

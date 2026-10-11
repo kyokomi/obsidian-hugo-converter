@@ -41,6 +41,8 @@ ObsidianのノートをHugoブログ形式に変換するプラグイン。
 - 画像はHugoサイトの `static/images/<slug>/` にコピーする
 - Hugoルートは出力先から `config.toml` を上方向探索して自動検出
 - 参照は `/images/<slug>/<file>` の絶対パス。アイキャッチは本文の最初の画像
+- `![[a.png|480]]` / `|480x300` / `|alt` のObsidianオプションに対応。サイズは `?width=W&height=H` クエリで出力し、blog側の `layouts/_default/_markup/render-image.html` が `<img width/height>` に変換する
+- wikilinkの解決は `metadataCache.getFirstLinkpathDest` を優先し、無ければ `images/<name>` と直指定を試す
 - 外部API依存なし
 
 ## ファイル構成
@@ -68,5 +70,6 @@ hugo-converter/
 - Output Directory（Hugoの content/post）を設定すること。未設定時はダウンロードにフォールバック
 - エラーハンドリングでユーザー体験を重視
 - 元のObsidianノートは書き換えない（画像参照はそのまま。再変換でもslugは固定）
+- slug本体は frontmatter の `slug:` → ファイル名のslug化 → 空なら `post-<ファイル名ハッシュ8桁>` の順で決める（`resolveBaseSlug`）。日本語タイトルは slug化で空になるので `slug:` を書くのを推奨
 - 再変換時は `static/images/<slug>/` をクリーンビルド（`.../static/images/<slug>` 以外を消さない安全ガードあり）
 

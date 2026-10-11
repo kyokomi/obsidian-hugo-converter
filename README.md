@@ -41,6 +41,12 @@ This plugin will be submitted to the Community Plugins repository.
 2. Images are copied into `static/images/<slug>/` and referenced as `/images/<slug>/...` (the source note is not modified)
 3. The converted file is saved to the Output Directory (or downloaded) in `YYYYMMDD00-slug.md` format
 
+### Slug
+The `slug` part of the filename is resolved in this order (all deterministic, so re-converting yields the same slug):
+1. `slug:` in the source note's frontmatter (recommended for Japanese titles), e.g. `slug: parental-leave-return`
+2. The note filename, lowercased with spaces → `-` and non-ASCII characters removed
+3. If that is empty (e.g. a Japanese-only title), `post-<8-char hash of the filename>`
+
 ## Conversion Features
 
 ### Tag Conversion
@@ -69,6 +75,14 @@ The image file is copied to `static/images/<slug>/` and the reference is rewritt
 ↓
 ```markdown
 ![](/images/<slug>/pasted-image-20220529164221.png)
+```
+
+Obsidian size/alt options are supported. Sizes are emitted as `?width=W&height=H` query parameters so a Hugo `render-image.html` hook can turn them into `<img width>` / `height` attributes:
+
+```markdown
+![[diagram.png|480]]        → ![](/images/<slug>/diagram.png?width=480)
+![[diagram.png|480x300]]    → ![](/images/<slug>/diagram.png?width=480&height=300)
+![[diagram.png|caption|480]] → ![caption](/images/<slug>/diagram.png?width=480)
 ```
 
 ### Internal Link Conversion
